@@ -6,7 +6,7 @@ import "@/app/clerk-auth.css";
 export const dynamic = "force-dynamic";
 
 export const metadata = {
-  title: "Signing you in · RapidMOT",
+  title: "Signing you in · Wasup Dental",
 };
 
 export default function ChooseOrganizationTaskPage() {

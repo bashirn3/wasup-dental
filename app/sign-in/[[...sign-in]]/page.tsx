@@ -5,8 +5,8 @@ import SignInForm from "@/components/auth/SignInForm";
 import { clerkEnabled, resolveTenantId } from "@/lib/auth";
 
 export const metadata = {
-  title: "Sign in · RapidMOT",
-  description: "Your leads kept moving while you were away. Sign in to catch up.",
+  title: "Sign in · Wasup Dental",
+  description: "Open your dental workspace.",
 };
 
 export default async function SignInPage() {

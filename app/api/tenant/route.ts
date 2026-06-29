@@ -6,7 +6,7 @@ import { syncClerkOrganizationName } from "@/lib/clerk-org-name";
 import { syncSuperadminOrgAccess } from "@/lib/superadmin-org-access";
 import type { OnboardingDraft } from "@/lib/types";
 
-/** Compatibility endpoint for MOT shell pieces. Backed by Dental practices. */
+/** Compatibility endpoint for the dashboard shell. Backed by Dental practices. */
 export async function GET(req: NextRequest) {
   const supabase = supabaseAdmin();
   if (!supabase) return NextResponse.json({ tenant: null });
@@ -77,8 +77,7 @@ export async function POST(req: NextRequest) {
 
   const clerkBinding = orgId ?? userId ?? null;
 
-  // One garage per active org/account: if this context already has a tenant,
-  // update it in place, even if they picked a different garage this time.
+  // One practice per active org/account: update it in place when setup resumes.
   if (userId) {
     const membership = await resolvePracticeMembership();
     if (membership?.practiceId) {

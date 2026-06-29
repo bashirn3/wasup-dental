@@ -45,6 +45,7 @@ export type DentalLead = {
   practiceId: string;
   name: string;
   phone: string;
+  email: string | null;
   treatment: TreatmentKey;
   status: LeadStatus;
   source: string;
@@ -53,8 +54,23 @@ export type DentalLead = {
   boxStage: string | null;
   needsHuman: boolean;
   aiConfidence: number | null;
+  aiActioned: boolean;
+  actioned: boolean;
+  clientReplied: boolean;
+  unseenReplyCount: number;
+  conversationCount: number;
+  leadSummary: string | null;
+  urgency: string | null;
+  actionedNote: string | null;
+  entryPoint: string | null;
+  actionedAt: string | null;
+  aiActionedAt: string | null;
+  becameLeadAt: string | null;
+  lastUpdatedAt: string | null;
+  scrapedAt: string | null;
   lastSyncedAt: string | null;
   updatedAt: string;
+  lastOutboundAt: string | null;
   lastMessage: string;
   messages: DentalMessage[];
 };
@@ -109,12 +125,52 @@ export type DentalDashboardData = {
   role?: Role;
   metrics?: {
     leadTotal: number;
+    filteredLeadTotal?: number;
     loadedLeadCount: number;
     aiActionedTotal: number;
     needsHumanTotal: number;
     bookedTotal: number;
+    clientRepliedTotal?: number;
+  };
+  pageInfo?: {
+    limit: number;
+    offset: number;
+    hasMore: boolean;
+  };
+  facets?: {
+    boxes: string[];
+    stages: string[];
+    statuses: string[];
+  };
+  laneSummary?: {
+    name: string;
+    total: number;
+    needsHuman: number;
+    aiActioned: number;
+    booked: number;
+  }[];
+  analytics?: {
+    treatmentBreakdown: {
+      key: TreatmentKey;
+      label: string;
+      total: number;
+      aiActioned: number;
+      booked: number;
+    }[];
+    sourceBreakdown: {
+      source: string;
+      total: number;
+      clientReplied: number;
+    }[];
+    timeline: {
+      label: string;
+      total: number;
+      aiActioned: number;
+      clientReplied: number;
+    }[];
   };
   leads: DentalLead[];
+  activityLeads?: DentalLead[];
   integrations: DentalIntegration[];
   workflows: DentalWorkflow[];
   activity: {
@@ -122,6 +178,18 @@ export type DentalDashboardData = {
     title: string;
     description: string;
     createdAt: string;
+    occurredAt?: string | null;
+    leadId?: string;
+    patientName?: string;
+    treatment?: TreatmentKey;
+    lane?: string | null;
+    stage?: string | null;
+    leadSummary?: string | null;
+    actionedNote?: string | null;
+    aiActioned?: boolean;
+    clientReplied?: boolean;
+    needsHuman?: boolean;
+    conversationCount?: number;
   }[];
   sourceHealth: {
     status: "mock" | "native" | "fresh" | "stale" | "not_synced";

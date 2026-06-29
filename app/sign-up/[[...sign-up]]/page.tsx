@@ -5,8 +5,8 @@ import SignUpForm from "@/components/auth/SignUpForm";
 import { clerkEnabled, resolveTenantId } from "@/lib/auth";
 
 export const metadata = {
-  title: "Create account · RapidMOT",
-  description: "Every MOT lead, answered before the kettle boils.",
+  title: "Create account · Wasup Dental",
+  description: "Set up your dental practice workspace.",
 };
 
 export default async function SignUpPage() {

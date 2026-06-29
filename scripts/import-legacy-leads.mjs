@@ -60,7 +60,7 @@ const workspaces = [
 ];
 
 const SELECT_COLUMNS =
-  "boxly_lead_id, full_name, first_name, last_name, phone_e164, phone_number, email, box_name, box_stage, lead_source, lead_summary, urgency, ai_actioned, actioned, conversation_count, became_lead_at, last_updated_at, scraped_at, raw_data";
+  "boxly_lead_id, full_name, first_name, last_name, phone_e164, phone_number, email, box_name, box_stage, lead_source, lead_summary, urgency, ai_actioned, actioned, actioned_at, ai_actioned_at, conversation_count, became_lead_at, last_updated_at, scraped_at, raw_data";
 
 function normalize(row) {
   const fullName =
@@ -87,6 +87,8 @@ function buildExternalPayload(row) {
       urgency: row.urgency ?? null,
       aiActioned: row.ai_actioned ?? null,
       actioned: row.actioned ?? null,
+      actionedAt: row.actioned_at ?? null,
+      aiActionedAt: row.ai_actioned_at ?? null,
       conversationCount: row.conversation_count ?? null,
       becameLeadAt: row.became_lead_at ?? null,
       lastUpdatedAt: row.last_updated_at ?? null,

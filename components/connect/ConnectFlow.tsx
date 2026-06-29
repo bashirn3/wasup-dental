@@ -6,7 +6,7 @@ import { ONBOARDING_DRAFT_KEY, parseOnboardingDraft, TENANT_ID_KEY } from "@/lib
 
 export default function ConnectFlow() {
   const [tenantId, setTenantId] = useState("");
-  const [garageName, setGarageName] = useState("RapidMOT garage");
+  const [practiceName, setPracticeName] = useState("Dental practice");
   const [phone, setPhone] = useState("");
 
   useEffect(() => {
@@ -14,7 +14,7 @@ export default function ConnectFlow() {
     try {
       const d = parseOnboardingDraft(localStorage.getItem(ONBOARDING_DRAFT_KEY));
       if (d?.place?.phone) setPhone(d.place.phone);
-      if (d?.place?.name) setGarageName(d.place.name);
+      if (d?.place?.name) setPracticeName(d.place.name);
     } catch {
       /* fresh start */
     }
@@ -25,7 +25,7 @@ export default function ConnectFlow() {
   return (
     <WhatsAppConnectPanel
       tenantId={tenantId}
-      garageName={garageName}
+      practiceName={practiceName}
       initialPhone={phone}
       variant="page"
     />

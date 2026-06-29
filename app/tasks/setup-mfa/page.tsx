@@ -8,7 +8,7 @@ import "@/app/clerk-auth.css";
 export const dynamic = "force-dynamic";
 
 export const metadata = {
-  title: "Secure your account · RapidMOT",
+  title: "Secure your account · Wasup Dental",
 };
 
 export default function SetupMfaTaskPage() {

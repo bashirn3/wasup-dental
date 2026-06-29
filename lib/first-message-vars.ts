@@ -21,7 +21,7 @@ export const FIRST_MESSAGE_VARIABLES = [
 
 /** Default outbound template — matches horatio.html seed. */
 export const DEFAULT_FIRST_MESSAGE_TEMPLATE =
-  "Hi {{name}}! Your {{plate}} MOT is due {{in_days}}. Want me to book you in?";
+  "Hi {{name}}, thanks for your enquiry. Would you like help booking a consultation?";
 
 const DEFAULT_SAMPLES = Object.fromEntries(
   FIRST_MESSAGE_VARIABLES.map((v) => [v.token, v.sample]),

@@ -11,7 +11,14 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "practice_access_denied" }, { status: 403 });
   }
 
-  const data = await getDentalDashboardData(membership?.practiceId ?? null);
+  const data = await getDentalDashboardData(membership?.practiceId ?? null, {
+    limit: Number.parseInt(req.nextUrl.searchParams.get("limit") ?? "", 10),
+    offset: Number.parseInt(req.nextUrl.searchParams.get("offset") ?? "", 10),
+    q: req.nextUrl.searchParams.get("q"),
+    status: req.nextUrl.searchParams.get("status"),
+    box: req.nextUrl.searchParams.get("box"),
+    stage: req.nextUrl.searchParams.get("stage"),
+  });
   const workspaces = await listAccessibleWorkspaces();
 
   return NextResponse.json({

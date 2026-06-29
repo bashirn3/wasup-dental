@@ -541,7 +541,7 @@ export default function AgentBuilder({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             phone: waNumber,
-            name: draft?.place?.name || "RapidMOT garage",
+            name: draft?.place?.name || "Dental practice",
             tenantId,
             mode: linkMode,
           }),
@@ -555,7 +555,7 @@ export default function AgentBuilder({
             : data.error === "wasup_unavailable" || res.status === 502 || res.status === 503
               ? "WhatsApp service is busy right now. Wait a moment and try again."
               : data.error === "phone_already_linked"
-                ? "That WhatsApp number is already linked to another garage account."
+                ? "That WhatsApp number is already linked to another practice account."
                 : "Couldn't start the connection. Check the number and try again.",
         );
         return;
@@ -602,10 +602,10 @@ export default function AgentBuilder({
     return (
       <main className="flex min-h-dvh flex-col items-center justify-center bg-[#0B241C] px-6 text-center text-[#F2F5EF]">
         <h1 className="max-w-md text-balance font-[var(--font-space-grotesk)] text-3xl font-bold tracking-tight">
-          Set up your garage first
+          Set up your practice first
         </h1>
         <p className="mt-3 max-w-sm text-sm text-[#9DB3A7]">
-          The agent is built from your garage profile.
+          The assistant is built from your practice profile.
         </p>
         {isEdit && onClose ? (
           <button
@@ -643,7 +643,7 @@ export default function AgentBuilder({
           </button>
         ) : null}
         <div className="font-[var(--font-space-grotesk)] text-lg font-bold tracking-[-0.01em]">
-          Rapid<span className="text-[#C8F23C]">MOT</span>
+          Wasup<span className="text-[#C8F23C]">Dental</span>
         </div>
         {!isEdit ? (
           <div className="absolute right-6">
@@ -960,8 +960,8 @@ export default function AgentBuilder({
             </div>
             <div className="mt-3 max-w-sm text-[15px] text-[#9DB3A7]">
               {linkMode === "qr"
-                ? "On the garage phone: WhatsApp → Linked devices → Link a device, then scan this QR."
-                : "On the garage phone: WhatsApp → Linked devices → Link with phone number, then enter the code below."}
+                ? "On the practice phone: WhatsApp > Linked devices > Link a device, then scan this QR."
+                : "On the practice phone: WhatsApp > Linked devices > Link with phone number, then enter the code below."}
             </div>
             {linkMode === "qr" && (
               <div className="mt-5 w-[232px] rounded-3xl bg-white p-4 shadow-[0_18px_50px_rgba(0,0,0,0.35)]">

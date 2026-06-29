@@ -8,7 +8,7 @@ import "@/app/clerk-auth.css";
 export const dynamic = "force-dynamic";
 
 export const metadata = {
-  title: "Reset password · RapidMOT",
+  title: "Reset password · Wasup Dental",
 };
 
 export default function ResetPasswordTaskPage() {
@@ -17,7 +17,7 @@ export default function ResetPasswordTaskPage() {
   return (
     <AuthTaskShell
       title="Reset your password"
-      subtitle="Clerk flagged this password as compromised. Set a new one to continue."
+      subtitle="Set a new password before we open your workspace."
     >
       <TaskResetPassword redirectUrlComplete={POST_AUTH_REDIRECT} />
     </AuthTaskShell>

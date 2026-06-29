@@ -149,7 +149,7 @@ export default function FirstMessageComposer({
           contentEditable
           suppressContentEditableWarning
           onInput={emit}
-          data-placeholder={placeholder ?? "Hi {{name}}! Your MOT is due {{in_days}}…"}
+          data-placeholder={placeholder ?? "Hi {{name}}, thanks for your enquiry. Would you like help booking a consultation?"}
           className={`rm-fm-editor max-w-[92%] rounded-[10px] rounded-tl-[3px] bg-white px-3 text-sm leading-[1.5] text-[#111B21] shadow-[0_1px_1px_rgba(0,0,0,0.10)] outline-none ${
             tweakLayout ? "min-h-[78px] py-2.5" : "min-h-[84px] py-2.5"
           }`}

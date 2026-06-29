@@ -36,9 +36,9 @@ const spaceMono = Space_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Wasup Dental · Dental AI control plane",
+  title: "Wasup Dental · Dental lead follow-up",
   description:
-    "Connect Boxly, Dentally, Stripe, Wasup, and n8n so dental practices can manage AI reactivation from one clean dashboard.",
+    "Manage dental leads, WhatsApp conversations, and booking follow-up from one clean workspace.",
   applicationName: "Wasup Dental",
 };
 

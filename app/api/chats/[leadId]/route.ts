@@ -1,69 +1,51 @@
 import { NextRequest, NextResponse } from "next/server";
+import { resolvePracticeMembership } from "@/lib/dental-auth";
 import { supabaseAdmin } from "@/lib/supabase";
-import { resolveTenantId } from "@/lib/auth";
-import { sendMessage } from "@/lib/engine/wasup";
 
-/** Full thread for one lead. */
+export const dynamic = "force-dynamic";
+
+/** Full read-only transcript for one dental lead. */
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ leadId: string }> },
 ) {
   const { leadId } = await params;
-  const tenantId = await resolveTenantId(req.nextUrl.searchParams.get("tenantId"));
-  if (!tenantId) return NextResponse.json({ error: "missing_tenant" }, { status: 400 });
+  const membership = await resolvePracticeMembership(req.nextUrl.searchParams.get("practiceId"));
+  if (!membership?.practiceId) {
+    return NextResponse.json({ error: "practice_access_denied" }, { status: 403 });
+  }
 
   const supabase = supabaseAdmin();
   if (!supabase) return NextResponse.json({ messages: [] });
 
+  const { data: lead } = await supabase
+    .from("leads")
+    .select("id, practice_id")
+    .eq("id", leadId)
+    .eq("practice_id", membership.practiceId)
+    .maybeSingle();
+  if (!lead) return NextResponse.json({ error: "lead_not_found" }, { status: 404 });
+
   const { data } = await supabase
     .from("messages")
-    .select("id, direction, body, delivery_status, created_at")
-    .eq("tenant_id", tenantId)
+    .select("id, direction, body, ai_generated, created_at")
+    .eq("practice_id", membership.practiceId)
     .eq("lead_id", leadId)
     .order("created_at", { ascending: true })
-    .limit(200);
+    .limit(500);
 
-  return NextResponse.json({ messages: data ?? [] });
+  return NextResponse.json({
+    messages: (data ?? []).map((message) => ({
+      id: message.id,
+      direction: message.direction,
+      body: message.body,
+      aiGenerated: Boolean(message.ai_generated),
+      createdAt: message.created_at,
+    })),
+  });
 }
 
-/** Manual (human takeover) message into the thread. */
-export async function POST(
-  req: NextRequest,
-  { params }: { params: Promise<{ leadId: string }> },
-) {
-  const { leadId } = await params;
-  const { tenantId: clientTenantId, body } = (await req.json()) as {
-    tenantId?: string;
-    body?: string;
-  };
-  const tenantId = await resolveTenantId(clientTenantId);
-  if (!tenantId || !body?.trim()) {
-    return NextResponse.json({ error: "invalid_request" }, { status: 400 });
-  }
-
-  const supabase = supabaseAdmin();
-  if (!supabase) return NextResponse.json({ error: "no_storage" }, { status: 503 });
-
-  const [{ data: lead }, { data: tenant }] = await Promise.all([
-    supabase.from("leads").select("phone").eq("id", leadId).eq("tenant_id", tenantId).single(),
-    supabase.from("tenants").select("wasup_instance_id").eq("id", tenantId).single(),
-  ]);
-  if (!lead || !tenant?.wasup_instance_id) {
-    return NextResponse.json({ error: "not_connected" }, { status: 400 });
-  }
-
-  const outcome = await sendMessage(tenant.wasup_instance_id, lead.phone, body.trim());
-  await supabase.from("messages").insert({
-    tenant_id: tenantId,
-    lead_id: leadId,
-    direction: "outbound",
-    body: body.trim(),
-    wa_message_id: outcome.messageId,
-    delivery_status: outcome.ok ? "sent" : "failed",
-  });
-
-  if (!outcome.ok) {
-    return NextResponse.json({ error: outcome.blockedReason ?? "send_failed" }, { status: 502 });
-  }
-  return NextResponse.json({ ok: true });
+/** Manual sending is intentionally disabled in the dashboard parity slice. */
+export async function POST() {
+  return NextResponse.json({ error: "manual_sending_not_enabled" }, { status: 403 });
 }

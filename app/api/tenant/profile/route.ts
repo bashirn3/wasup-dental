@@ -15,7 +15,7 @@ function extractCustomInstructions(systemPrompt: string): string {
   return index >= 0 ? systemPrompt.slice(index + marker.length).trim() : "";
 }
 
-/** Full garage profile + active agent config for the settings editor. */
+/** Full practice profile + active assistant config for the settings editor. */
 export async function GET(req: NextRequest) {
   const tenantId = await resolveTenantId(req.nextUrl.searchParams.get("tenantId"));
   if (!tenantId) return NextResponse.json({ error: "missing_tenant" }, { status: 400 });

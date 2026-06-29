@@ -6,7 +6,7 @@ import { runOutboundForTenant } from "@/lib/engine/outbound";
 export const maxDuration = 300;
 
 /**
- * Manual "Send outreach now" for the signed-in garage.
+ * Manual "Send outreach now" for the signed-in practice.
  *
  * Unlike the daily cron (/api/engine/outbound), this runs only for the caller's
  * tenant and bypasses the auto-contact switch + sending-hours window so it can

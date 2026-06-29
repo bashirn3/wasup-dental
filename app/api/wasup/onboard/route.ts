@@ -114,7 +114,7 @@ export async function POST(req: NextRequest) {
       },
       body: JSON.stringify({
         phone: wasupPhone(phone),
-        name: name ?? "RapidMOT garage",
+        name: name ?? "Dental practice",
         profileName: name,
         // Inbound messages flow straight into the engine.
         webhookUrl: `${appBaseUrl}/api/webhooks/wasup`,

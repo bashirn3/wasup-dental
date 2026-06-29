@@ -53,7 +53,7 @@ export function CodeBlocks({ code }: { code: string | null }) {
 
 export type WhatsAppConnectPanelProps = {
   tenantId: string;
-  garageName?: string;
+  practiceName?: string;
   initialPhone?: string;
   /** Existing instance — skip phone step and show pairing (QR desktop only). */
   reconnectInstanceId?: string | null;
@@ -71,10 +71,10 @@ export type WhatsAppConnectPanelProps = {
 function linkErrorMessage(linkMode: LinkMode, data: { error?: string; wasupHttpStatus?: number }) {
   if (data.error === "wasup_unavailable" || data.error === "wasup_not_configured") {
     const code = data.wasupHttpStatus ? ` (HTTP ${data.wasupHttpStatus})` : "";
-    return `WhatsApp pairing service is unavailable${code}. The Wasup instance API is not responding — your instance may need a reset on the Wasup control plane.`;
+    return `WhatsApp pairing is unavailable${code}. Try again shortly or ask support to check the number.`;
   }
   if (data.error === "phone_required") {
-    return "Enter the WhatsApp number for this garage to generate a pairing code.";
+    return "Enter the WhatsApp number for this practice to generate a pairing code.";
   }
   return linkMode === "code"
     ? "Couldn't get a pairing code. Check the number and try again."
@@ -83,7 +83,7 @@ function linkErrorMessage(linkMode: LinkMode, data: { error?: string; wasupHttpS
 
 export function WhatsAppConnectPanel({
   tenantId,
-  garageName = "RapidMOT garage",
+  practiceName = "Dental practice",
   initialPhone = "",
   reconnectInstanceId = null,
   forcePhoneStep = false,
@@ -94,7 +94,7 @@ export function WhatsAppConnectPanel({
   doneHref = "/dashboard",
   doneLabel = "Go to my dashboard",
 }: WhatsAppConnectPanelProps) {
-  const { mode: autoMode, setMode, isMobile, canToggle } = useWaLinkMode();
+  const { mode: autoMode, setMode, canToggle } = useWaLinkMode();
   const linkMode = fixedLinkMode ?? autoMode;
   const showModeToggle = canToggle && !fixedLinkMode;
 
@@ -360,7 +360,7 @@ export function WhatsAppConnectPanel({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           phone,
-          name: garageName,
+          name: practiceName,
           tenantId,
           mode: linkMode,
         }),
@@ -375,7 +375,7 @@ export function WhatsAppConnectPanel({
           data.error === "wasup_not_configured"
             ? "WhatsApp service isn't configured yet."
             : data.error === "phone_already_linked"
-              ? "That WhatsApp number is already linked to another garage account."
+              ? "That WhatsApp number is already linked to another practice account."
               : linkErrorMessage(linkMode, data),
         );
         setPhase("error");
@@ -516,7 +516,7 @@ export function WhatsAppConnectPanel({
                 Link it in WhatsApp
               </h1>
               <p className="mt-3 max-w-xs text-[13px] leading-relaxed text-[#9DB3A7]">
-                On the garage phone: WhatsApp → Linked devices →{" "}
+                On the practice phone: WhatsApp &gt; Linked devices &gt;{" "}
                 <span className="text-[#C8F23C]">
                   {linkMode === "qr" ? "Link a device" : "Link with phone number"}
                 </span>
@@ -595,8 +595,8 @@ export function WhatsAppConnectPanel({
               <div className="mt-9 flex items-center gap-2.5 text-sm text-[#9DB3A7]">
                 <span className="post-signup-pulse h-[9px] w-[9px] shrink-0 rounded-full bg-[#C8F23C]" />
                 {linkMode === "code" && codeExpired
-                  ? "Code expired — tap New code"
-                  : "Waiting for the link — updates automatically"}
+                  ? "Code expired. Tap New code"
+                  : "Waiting for the link. Updates automatically"}
               </div>
 
               <button
@@ -646,9 +646,9 @@ export function WhatsAppConnectPanel({
                 WhatsApp connected
               </h1>
               <p className="post-signup-fade mt-2.5 max-w-sm text-[15px] leading-relaxed text-[#9DB3A7] [animation-delay:0.7s]">
-                Your agent is now live on{" "}
+                Your assistant is ready on{" "}
                 <span className="font-semibold text-white">
-                  {connectedPhone ?? phone ?? "your garage number"}
+                  {connectedPhone ?? phone ?? "your practice number"}
                 </span>
                 .
               </p>

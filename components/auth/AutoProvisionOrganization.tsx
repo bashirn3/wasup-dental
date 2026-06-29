@@ -74,12 +74,12 @@ export default function AutoProvisionOrganization() {
           user?.primaryEmailAddress?.emailAddress ??
           user?.emailAddresses?.[0]?.emailAddress ??
           "";
-        const baseName = defaults?.form?.name?.trim() || (email ? orgNameFromEmail(email) : "My garage");
+        const baseName = defaults?.form?.name?.trim() || (email ? orgNameFromEmail(email) : "My practice");
         const slug = defaults?.form?.slug?.trim() || undefined;
 
         let org = await createOrganization({ name: baseName, slug }).catch(() => null);
         if (!org?.id && email) {
-          const local = email.split("@")[0]?.replace(/[^a-z0-9]+/gi, "") || "garage";
+          const local = email.split("@")[0]?.replace(/[^a-z0-9]+/gi, "") || "practice";
           org = await createOrganization({
             name: baseName,
             slug: slug ? `${slug}-${local}` : undefined,
@@ -139,7 +139,7 @@ export default function AutoProvisionOrganization() {
     return (
       <AuthTaskShell
         title="Choose workspace"
-        subtitle="Pick the garage workspace you want to open."
+        subtitle="Pick the practice workspace you want to open."
       >
         <div className="flex flex-col gap-2">
           {memberships.map((membership) => {

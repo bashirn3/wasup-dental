@@ -11,18 +11,18 @@ type Props = {
 export default function AuthTaskShell({ title, subtitle, children }: Props) {
   return (
     <main className="rm-auth">
-      <section className="rm-brand" aria-label="RapidMOT">
+      <section className="rm-brand" aria-label="Wasup Dental">
         <Link href="/" className="rm-logo rm-fade-in">
-          Rapid<span className="rm-logo-accent">MOT</span>
+          Wasup<span className="rm-logo-accent">Dental</span>
         </Link>
 
         <div className="rm-watermark-text" aria-hidden>
-          MOT
+          WD
         </div>
 
         <div className="rm-brand-copy">
-          <h2 className="rm-brand-headline">Almost there — one quick step.</h2>
-          <p className="rm-brand-desc">Finish this step and we&apos;ll take you straight to your garage.</p>
+          <h2 className="rm-brand-headline">Almost there. One quick step.</h2>
+          <p className="rm-brand-desc">Finish this step and we&apos;ll take you straight to your workspace.</p>
         </div>
       </section>
 

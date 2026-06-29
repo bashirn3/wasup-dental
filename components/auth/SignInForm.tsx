@@ -15,7 +15,7 @@ type Step = "identifier" | "password" | "email_code" | "second_factor";
 /** Email/password completion — env override still allowed for legacy flows. */
 const REDIRECT =
   process.env.NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL ?? POST_AUTH_REDIRECT;
-const DESKTOP_EMAIL_PLACEHOLDER = "you@workshop.co.uk";
+const DESKTOP_EMAIL_PLACEHOLDER = "you@practice.co.uk";
 const MOBILE_EMAIL_PLACEHOLDER = "Email address";
 
 export default function SignInForm() {

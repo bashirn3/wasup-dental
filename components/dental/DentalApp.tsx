@@ -5,9 +5,20 @@ import Link from "next/link";
 import AccountMenu from "@/components/auth/AccountMenu";
 import { MIcon } from "@/components/mot/icons";
 import { defaultAgentPrompt, defaultFirstMessage, treatmentLabels } from "@/lib/dental-demo-data";
-import type { DentalDashboardData, DentalLead } from "@/lib/dental-types";
+import type { DentalDashboardData, DentalLead, DentalMessage } from "@/lib/dental-types";
 
 type TabKey = "leads" | "activity" | "agent" | "connect";
+type LeadFilters = {
+  q: string;
+  status: string;
+  box: string;
+  stage: string;
+};
+type ActivityFilters = {
+  q: string;
+  status: string;
+  box: string;
+};
 
 const tabs: [TabKey, string, typeof MIcon.users][] = [
   ["leads", "Leads", MIcon.users],
@@ -18,6 +29,9 @@ const tabs: [TabKey, string, typeof MIcon.users][] = [
 
 const CLERK_ON = Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY);
 const ACTIVE_WORKSPACE_KEY = "wasup-dental-active-workspace";
+const PAGE_SIZE = 50;
+const emptyFilters: LeadFilters = { q: "", status: "", box: "", stage: "" };
+const emptyActivityFilters: ActivityFilters = { q: "", status: "", box: "" };
 
 export default function DentalApp() {
   const [tab, setTab] = useState<TabKey>("leads");
@@ -28,25 +42,48 @@ export default function DentalApp() {
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [firstMessage, setFirstMessage] = useState(defaultFirstMessage);
   const [prompt, setPrompt] = useState(defaultAgentPrompt);
+  const [leadFilters, setLeadFilters] = useState<LeadFilters>(emptyFilters);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [chatMessages, setChatMessages] = useState<DentalMessage[]>([]);
+  const [chatLoading, setChatLoading] = useState(false);
   const [activePracticeId, setActivePracticeId] = useState<string | null>(() => {
     if (typeof window === "undefined") return null;
     return window.localStorage.getItem(ACTIVE_WORKSPACE_KEY);
   });
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (options: { offset?: number; append?: boolean } = {}) => {
+    const offset = options.offset ?? 0;
+    if (options.append) setLoadingMore(true);
     try {
-      const query = activePracticeId ? `?practiceId=${encodeURIComponent(activePracticeId)}` : "";
-      const res = await fetch(`/api/dashboard-data${query}`, { cache: "no-store" });
+      const params = new URLSearchParams({
+        limit: String(PAGE_SIZE),
+        offset: String(offset),
+      });
+      if (activePracticeId) params.set("practiceId", activePracticeId);
+      if (leadFilters.q.trim()) params.set("q", leadFilters.q.trim());
+      if (leadFilters.status) params.set("status", leadFilters.status);
+      if (leadFilters.box) params.set("box", leadFilters.box);
+      if (leadFilters.stage) params.set("stage", leadFilters.stage);
+
+      const res = await fetch(`/api/dashboard-data?${params.toString()}`, { cache: "no-store" });
       const payload = await res.json();
-      setData(payload);
+      setData((prev) =>
+        options.append && prev
+          ? {
+              ...payload,
+              leads: [...prev.leads, ...(payload.leads ?? [])],
+            }
+          : payload,
+      );
       if (payload.practiceId && payload.practiceId !== activePracticeId) {
         setActivePracticeId(payload.practiceId);
         window.localStorage.setItem(ACTIVE_WORKSPACE_KEY, payload.practiceId);
       }
     } finally {
       setLoading(false);
+      setLoadingMore(false);
     }
-  }, [activePracticeId]);
+  }, [activePracticeId, leadFilters]);
 
   useEffect(() => {
     void load();
@@ -69,10 +106,39 @@ export default function DentalApp() {
   const leads = useMemo(() => data?.leads ?? [], [data]);
   const workspaces = data?.workspaces ?? [];
   const selectedLead = useMemo(
-    () => leads.find((lead) => lead.id === selectedLeadId) ?? leads[0] ?? null,
-    [leads, selectedLeadId],
+    () =>
+      [...leads, ...(data?.activityLeads ?? [])].find((lead) => lead.id === selectedLeadId) ?? null,
+    [data?.activityLeads, leads, selectedLeadId],
   );
   const stats = useMemo(() => buildStats(leads, data?.metrics), [leads, data?.metrics]);
+
+  useEffect(() => {
+    if (!selectedLead) {
+      setChatMessages([]);
+      return;
+    }
+
+    setChatMessages(selectedLead.messages);
+    setChatLoading(true);
+    const controller = new AbortController();
+    const params = new URLSearchParams();
+    if (data?.practiceId) params.set("practiceId", data.practiceId);
+
+    fetch(`/api/chats/${selectedLead.id}?${params.toString()}`, {
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then((res) => res.json())
+      .then((payload) => {
+        if (Array.isArray(payload.messages)) setChatMessages(payload.messages);
+      })
+      .catch((error) => {
+        if (error?.name !== "AbortError") setChatMessages(selectedLead.messages);
+      })
+      .finally(() => setChatLoading(false));
+
+    return () => controller.abort();
+  }, [data?.practiceId, selectedLead]);
 
   async function provisionDrafts() {
     setProvisioning(true);
@@ -161,7 +227,7 @@ export default function DentalApp() {
                 {data.practice?.name ?? "Dental workspace"}
               </h1>
               <p className="mt-2 max-w-xl text-sm leading-6 text-paper/65">
-                See every lead, conversation, AI action, and booking setting in one place.
+                Review conversations, follow-up, and booking progress from one workspace.
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-2">
@@ -171,6 +237,8 @@ export default function DentalApp() {
                   onChange={(event) => {
                     const next = event.target.value;
                     setActivePracticeId(next);
+                    setSelectedLeadId(null);
+                    setLeadFilters(emptyFilters);
                     window.localStorage.setItem(ACTIVE_WORKSPACE_KEY, next);
                     setLoading(true);
                   }}
@@ -202,10 +270,10 @@ export default function DentalApp() {
 
           <div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-5">
             <Stat label="Total leads" value={data.metrics?.leadTotal ?? stats.total} />
-            <Stat label="AI actioned" value={stats.aiActioned} />
+            <Stat label="Contacted" value={stats.aiActioned} />
             <Stat label="Needs staff" value={stats.needsHuman} />
             <Stat label="Booked" value={stats.booked} />
-            <Stat label="Source" value={data.sourceHealth.status === "fresh" ? "Fresh" : data.sourceHealth.status === "mock" ? "Demo" : "Check"} text />
+            <Stat label="Replies" value={data.metrics?.clientRepliedTotal ?? leads.filter((lead) => lead.clientReplied).length} />
           </div>
         </header>
 
@@ -224,16 +292,46 @@ export default function DentalApp() {
           ))}
         </div>
 
+        {(tab === "leads" || tab === "activity") && data.laneSummary?.length ? (
+          <LaneOverview
+            lanes={data.laneSummary}
+            activeLane={leadFilters.box}
+            onSelectLane={(lane) => {
+              setTab("leads");
+              setSelectedLeadId(null);
+              setLeadFilters({ ...emptyFilters, box: lane });
+              setLoading(true);
+            }}
+          />
+        ) : null}
+
         <section className="mt-4 flex-1">
           {tab === "leads" && (
             <LeadsPanel
               leads={leads}
               selectedLead={selectedLead}
               totalLeads={data.metrics?.leadTotal ?? leads.length}
+              filteredTotal={data.metrics?.filteredLeadTotal ?? data.metrics?.leadTotal ?? leads.length}
+              facets={data.facets}
+              filters={leadFilters}
+              hasMore={Boolean(data.pageInfo?.hasMore)}
+              loadingMore={loadingMore}
+              onFiltersChange={(filters) => {
+                setSelectedLeadId(null);
+                setLeadFilters(filters);
+                setLoading(true);
+              }}
+              onLoadMore={() => void load({ offset: leads.length, append: true })}
               onSelect={setSelectedLeadId}
             />
           )}
-          {tab === "activity" && <ActivityPanel data={data} />}
+          {tab === "activity" && (
+            <ActivityPanel
+              data={data}
+              selectedLeadId={selectedLeadId}
+              onSelectLead={setSelectedLeadId}
+            />
+          )}
           {tab === "agent" && (
             <AgentPanel
               firstMessage={firstMessage}
@@ -249,6 +347,13 @@ export default function DentalApp() {
           )}
         </section>
       </div>
+
+      <LeadDrawer
+        lead={selectedLead}
+        messages={chatMessages}
+        loading={chatLoading}
+        onClose={() => setSelectedLeadId(null)}
+      />
 
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-black/5 bg-white/95 px-3 pb-[max(env(safe-area-inset-bottom),0.5rem)] pt-2 shadow-2xl backdrop-blur md:hidden">
         <div className="grid grid-cols-4 gap-1">
@@ -281,137 +386,642 @@ function Stat({ label, value, text = false }: { label: string; value: number | s
   );
 }
 
+function LaneOverview({
+  lanes,
+  activeLane,
+  onSelectLane,
+}: {
+  lanes: NonNullable<DentalDashboardData["laneSummary"]>;
+  activeLane: string;
+  onSelectLane: (lane: string) => void;
+}) {
+  return (
+    <section className="mt-4 rounded-[2rem] bg-white p-4 shadow-sm">
+      <div className="flex items-center justify-between gap-3 px-1">
+        <div>
+          <h2 className="text-sm font-semibold">Lane overview</h2>
+          <p className="text-xs text-ink/45">Tap a lane to filter leads by treatment or stage.</p>
+        </div>
+        {activeLane && <LanePill label={`Filtered: ${activeLane}`} />}
+      </div>
+      <div className="mt-4 flex gap-3 overflow-x-auto pb-1">
+        {lanes.map((lane) => (
+          <button
+            key={lane.name}
+            type="button"
+            onClick={() => onSelectLane(lane.name)}
+            className={`min-w-[210px] rounded-2xl border px-4 py-3 text-left transition ${
+              activeLane === lane.name
+                ? "border-pine bg-pine text-paper"
+                : "border-line bg-mist/50 hover:border-pine/20 hover:bg-white"
+            }`}
+          >
+            <p className="truncate text-sm font-semibold">{lane.name}</p>
+            <p
+              className={`mt-2 text-3xl font-semibold tracking-tight ${
+                activeLane === lane.name ? "text-lime" : "text-ink"
+              }`}
+            >
+              {lane.total.toLocaleString()}
+            </p>
+            <div
+              className={`mt-2 grid grid-cols-3 gap-2 text-[11px] ${
+                activeLane === lane.name ? "text-paper/60" : "text-ink/45"
+              }`}
+            >
+              <span>{lane.aiActioned.toLocaleString()} AI</span>
+              <span>{lane.needsHuman.toLocaleString()} staff</span>
+              <span>{lane.booked.toLocaleString()} booked</span>
+            </div>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function LeadsPanel({
   leads,
   selectedLead,
   totalLeads,
+  filteredTotal,
+  facets,
+  filters,
+  hasMore,
+  loadingMore,
+  onFiltersChange,
+  onLoadMore,
   onSelect,
 }: {
   leads: DentalLead[];
   selectedLead: DentalLead | null;
   totalLeads: number;
+  filteredTotal: number;
+  facets?: DentalDashboardData["facets"];
+  filters: LeadFilters;
+  hasMore: boolean;
+  loadingMore: boolean;
+  onFiltersChange: (filters: LeadFilters) => void;
+  onLoadMore: () => void;
   onSelect: (id: string) => void;
 }) {
+  const filtered = filteredTotal !== totalLeads;
+
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_420px]">
-      <div className="overflow-hidden rounded-[2rem] bg-white shadow-sm">
-        <div className="border-b border-line px-5 py-4">
-          <h2 className="text-lg font-semibold">Leads</h2>
-          <p className="text-sm text-ink/50">
-            Showing latest {leads.length.toLocaleString()} of {totalLeads.toLocaleString()} mirrored leads.
-          </p>
-        </div>
-        <div className="divide-y divide-line">
-          {leads.map((lead) => (
+    <div className="overflow-hidden rounded-[2rem] bg-white shadow-sm">
+      <div className="border-b border-line px-5 py-4">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-semibold">Leads</h2>
+            <p className="text-sm text-ink/50">
+              Search every patient and lead in this workspace.
+            </p>
+            <p className="mt-1 text-xs text-ink/35">
+              Showing {leads.length.toLocaleString()} of{" "}
+              {(filtered ? filteredTotal : totalLeads).toLocaleString()} leads
+              {filtered ? ` filtered from ${totalLeads.toLocaleString()} total.` : "."}
+            </p>
+          </div>
+          {(filters.q || filters.status || filters.box || filters.stage) && (
             <button
-              key={lead.id}
-              onClick={() => onSelect(lead.id)}
-              className={`flex w-full items-start gap-3 px-5 py-4 text-left transition hover:bg-mist ${
-                selectedLead?.id === lead.id ? "bg-mist" : ""
-              }`}
+              type="button"
+              onClick={() => onFiltersChange(emptyFilters)}
+              className="rounded-full bg-mist px-3 py-2 text-xs font-semibold text-ink/55 transition hover:text-ink"
             >
-              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-pine text-sm font-semibold text-lime">
-                {lead.name.charAt(0)}
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="flex items-center gap-2">
-                  <span className="truncate font-semibold">{lead.name}</span>
-                  {lead.needsHuman && (
-                    <span className="rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-semibold text-red-700">
-                      Staff
-                    </span>
-                  )}
-                </span>
-                <span className="mt-1 flex flex-wrap gap-1.5">
-                  <LanePill label={lead.boxName ?? lead.sourceSystem} />
-                  <LanePill label={lead.boxStage ?? lead.status} muted />
-                  <LanePill label={treatmentLabels[lead.treatment]} muted />
-                </span>
-                <span className="mt-2 block truncate text-sm text-ink/55">{lead.lastMessage}</span>
-              </span>
+              Clear filters
             </button>
-          ))}
+          )}
+        </div>
+        <div className="mt-4 grid gap-2 md:grid-cols-[minmax(0,1.4fr)_1fr_1fr_1fr]">
+          <input
+            value={filters.q}
+            onChange={(event) => onFiltersChange({ ...filters, q: event.target.value })}
+            placeholder="Search name, phone, lane, or stage"
+            className="rounded-2xl border border-line bg-mist/50 px-4 py-3 text-sm outline-none transition focus:border-pine/30 focus:bg-white"
+          />
+          <FilterSelect
+            label="Status"
+            value={filters.status}
+            options={facets?.statuses ?? []}
+            onChange={(value) => onFiltersChange({ ...filters, status: value })}
+          />
+          <FilterSelect
+            label="Lane"
+            value={filters.box}
+            options={facets?.boxes ?? []}
+            onChange={(value) => onFiltersChange({ ...filters, box: value })}
+          />
+          <FilterSelect
+            label="Stage"
+            value={filters.stage}
+            options={facets?.stages ?? []}
+            onChange={(value) => onFiltersChange({ ...filters, stage: value })}
+          />
         </div>
       </div>
-      <ChatPanel lead={selectedLead} />
+      <div className="divide-y divide-line">
+        {leads.length ? leads.map((lead) => (
+          <button
+            key={lead.id}
+            onClick={() => onSelect(lead.id)}
+            className={`flex w-full items-start gap-3 px-5 py-4 text-left transition hover:bg-mist ${
+              selectedLead?.id === lead.id ? "bg-mist" : ""
+            }`}
+          >
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-pine text-sm font-semibold text-lime">
+              {lead.name.charAt(0)}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="flex items-center gap-2">
+                <span className="truncate font-semibold">{lead.name}</span>
+                {lead.needsHuman && (
+                  <span className="rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-semibold text-red-700">
+                    Staff
+                  </span>
+                )}
+                {lead.clientReplied && (
+                  <span className="rounded-full bg-sky-50 px-2 py-0.5 text-[11px] font-semibold text-sky-700">
+                    Replied
+                  </span>
+                )}
+              </span>
+              <span className="mt-1 flex flex-wrap gap-1.5">
+                <LanePill label={lead.boxName ?? lead.sourceSystem} />
+                <LanePill label={lead.boxStage ?? lead.status} muted />
+                <LanePill label={treatmentLabels[lead.treatment]} muted />
+                {lead.aiActioned && <LanePill label="Contacted" muted />}
+                {lead.conversationCount > 0 && <LanePill label={`${lead.conversationCount} messages`} muted />}
+              </span>
+              <span className="mt-2 block truncate text-sm text-ink/55">
+                {lead.leadSummary ?? lead.lastMessage}
+              </span>
+            </span>
+          </button>
+        )) : (
+          <div className="px-5 py-12 text-center">
+            <p className="font-semibold">No leads match these filters.</p>
+            <p className="mt-1 text-sm text-ink/50">Clear the filters or try a broader search.</p>
+          </div>
+        )}
+      </div>
+      {hasMore && (
+        <div className="border-t border-line p-4">
+          <button
+            type="button"
+            onClick={onLoadMore}
+            disabled={loadingMore}
+            className="w-full rounded-full bg-pine px-5 py-3 text-sm font-semibold text-lime transition hover:brightness-110 disabled:opacity-50"
+          >
+            {loadingMore ? "Loading more..." : "Load more leads"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
 
-function ChatPanel({ lead }: { lead: DentalLead | null }) {
-  if (!lead) {
-    return (
-      <div className="rounded-[2rem] bg-white p-6 text-sm text-ink/55 shadow-sm">
-        Select a lead to see the chat.
-      </div>
-    );
-  }
+function FilterSelect({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: string[];
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="block">
+      <span className="sr-only">{label}</span>
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="w-full rounded-2xl border border-line bg-mist/50 px-4 py-3 text-sm outline-none transition focus:border-pine/30 focus:bg-white"
+      >
+        <option value="">{label}</option>
+        {options.map((option) => (
+          <option key={option} value={option}>
+            {humanize(option)}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function LeadDrawer({
+  lead,
+  messages,
+  loading,
+  onClose,
+}: {
+  lead: DentalLead | null;
+  messages: DentalMessage[];
+  loading: boolean;
+  onClose: () => void;
+}) {
+  const [tab, setTab] = useState<"chat" | "details" | "notes">("chat");
+  const sortedMessages = [...messages].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  if (!lead) return null;
 
   return (
-    <aside className="rounded-[2rem] bg-white p-4 shadow-sm">
-      <div className="flex items-center justify-between border-b border-line pb-4">
-        <div>
-          <h3 className="font-semibold">{lead.name}</h3>
-          <p className="text-xs text-ink/45">{lead.phone}</p>
-        </div>
-        <LanePill label={lead.status} />
-      </div>
-      <div className="mt-4 space-y-3 rounded-[1.5rem] bg-[#eee9e1] p-4">
-        {lead.messages.length ? (
-          lead.messages.map((message) => (
-            <div
-              key={message.id}
-              className={`max-w-[86%] rounded-2xl px-4 py-3 text-sm shadow-sm ${
-                message.direction === "outbound"
-                  ? "ml-auto rounded-br-sm bg-[#d9fdd3]"
-                  : "rounded-bl-sm bg-white"
-              }`}
+    <div className="fixed inset-0 z-50">
+      <button
+        type="button"
+        aria-label="Close patient panel"
+        onClick={onClose}
+        className="absolute inset-0 bg-pine-deep/35 backdrop-blur-[2px]"
+      />
+      <aside className="absolute inset-y-0 right-0 flex w-full max-w-[520px] flex-col bg-white shadow-2xl">
+        <div className="border-b border-line px-5 py-4">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <h3 className="truncate text-lg font-semibold">{lead.name}</h3>
+              <p className="mt-1 text-xs text-ink/45">{lead.phone || lead.email || "No contact saved"}</p>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                <LanePill label={lead.boxName ?? "Unassigned"} />
+                <LanePill label={lead.boxStage ?? lead.status} muted />
+                {lead.needsHuman && <LanePill label="Needs staff" muted />}
+                {lead.clientReplied && <LanePill label="Patient replied" muted />}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-full bg-mist px-3 py-2 text-xs font-semibold text-ink/55 transition hover:text-ink"
             >
-              <p>{message.body}</p>
-              {message.aiGenerated && (
-                <p className="mt-1 text-[10px] font-semibold uppercase tracking-wider text-ink/35">
-                  AI
+              Close
+            </button>
+          </div>
+        </div>
+
+        <div className="border-b border-line bg-white px-3 py-2">
+          <div className="grid grid-cols-3 rounded-full bg-mist p-1">
+            {[
+              ["chat", `Chat (${messages.length})`],
+              ["details", "Details"],
+              ["notes", "Notes"],
+            ].map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setTab(key as "chat" | "details" | "notes")}
+                className={`rounded-full px-3 py-2 text-xs font-semibold transition ${
+                  tab === key ? "bg-pine text-lime" : "text-ink/50 hover:text-ink"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {tab === "chat" && (
+            <div className="min-h-full space-y-3 bg-[#eee9e1] p-4">
+              {loading && !sortedMessages.length ? (
+                <p className="py-8 text-center text-sm text-ink/45">Loading conversation...</p>
+              ) : sortedMessages.length ? (
+                sortedMessages.map((message) => (
+                  <div
+                    key={message.id}
+                    className={`max-w-[86%] rounded-2xl px-4 py-3 text-sm shadow-sm ${
+                      message.direction === "outbound"
+                        ? "ml-auto rounded-br-sm bg-[#d9fdd3]"
+                        : "rounded-bl-sm bg-white"
+                    }`}
+                  >
+                    <p className="whitespace-pre-wrap">{message.body}</p>
+                    <p className="mt-1 text-[10px] font-semibold uppercase tracking-wider text-ink/35">
+                      {message.aiGenerated ? "Assistant" : message.direction === "inbound" ? "Patient" : "Team"}
+                      {" · "}
+                      {formatDateTime(message.createdAt)}
+                    </p>
+                  </div>
+                ))
+              ) : (
+                <p className="py-8 text-center text-sm text-ink/45">No conversation imported for this lead yet.</p>
+              )}
+              {loading && sortedMessages.length > 0 && (
+                <p className="text-center text-xs font-semibold uppercase tracking-wider text-ink/35">
+                  Refreshing conversation...
                 </p>
               )}
             </div>
-          ))
-        ) : (
-          <p className="py-8 text-center text-sm text-ink/45">No transcript imported yet.</p>
-        )}
-      </div>
-    </aside>
+          )}
+
+          {tab === "details" && (
+            <div className="space-y-5 p-5">
+              {lead.leadSummary && (
+                <div className="rounded-2xl bg-mist px-4 py-3 text-sm leading-6 text-ink/65">
+                  <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-ink/35">Summary</p>
+                  {lead.leadSummary}
+                </div>
+              )}
+              <div className="grid gap-4 text-sm sm:grid-cols-2">
+                <Detail label="Treatment" value={treatmentLabels[lead.treatment]} />
+                <Detail label="Status" value={humanize(lead.status)} />
+                <Detail label="Lane" value={lead.boxName ?? "Unassigned"} />
+                <Detail label="Stage" value={lead.boxStage ?? "Unknown"} />
+                <Detail label="Phone" value={lead.phone || "Not saved"} />
+                <Detail label="Email" value={lead.email || "Not saved"} />
+                <Detail label="Messages" value={lead.conversationCount.toLocaleString()} />
+                <Detail label="Became lead" value={formatDateTime(lead.becameLeadAt)} />
+                <Detail label="Contacted" value={formatDateTime(lead.aiActionedAt ?? lead.actionedAt)} />
+                <Detail label="Last updated" value={formatDateTime(lead.lastUpdatedAt ?? lead.updatedAt)} />
+                {lead.entryPoint && <Detail label="Entry point" value={lead.entryPoint} wide />}
+                {lead.actionedNote && <Detail label="Internal note" value={lead.actionedNote} wide />}
+              </div>
+            </div>
+          )}
+
+          {tab === "notes" && (
+            <div className="flex min-h-full flex-col items-center justify-center p-8 text-center">
+              <p className="font-semibold">Notes are coming next.</p>
+              <p className="mt-2 max-w-xs text-sm leading-6 text-ink/50">
+                For now, review the conversation and patient details here. Internal notes will stay separate from patient replies.
+              </p>
+            </div>
+          )}
+        </div>
+      </aside>
+    </div>
   );
 }
 
-function ActivityPanel({ data }: { data: DentalDashboardData }) {
+function ActivityPanel({
+  data,
+  selectedLeadId,
+  onSelectLead,
+}: {
+  data: DentalDashboardData;
+  selectedLeadId: string | null;
+  onSelectLead: (leadId: string) => void;
+}) {
+  const [filters, setFilters] = useState<ActivityFilters>(emptyActivityFilters);
+  const metrics = data.metrics;
+  const total = Math.max(metrics?.leadTotal ?? data.leads.length, 1);
+  const sourceLeads = data.activityLeads?.length ? data.activityLeads : data.leads;
+  const activityLeads = sourceLeads
+    .filter((lead) => lead.aiActioned || lead.actioned || lead.clientReplied || lead.needsHuman || lead.status === "booked")
+    .filter((lead) => {
+      const search = filters.q.trim().toLowerCase();
+      const statusMatches =
+        !filters.status ||
+        (filters.status === "contacted" && (lead.aiActioned || lead.actioned)) ||
+        (filters.status === "patient_replied" && lead.clientReplied) ||
+        (filters.status === "needs_staff" && lead.needsHuman) ||
+        (filters.status === "booked" && lead.status === "booked");
+      const laneMatches = !filters.box || lead.boxName === filters.box;
+      const searchMatches =
+        !search ||
+        [lead.name, lead.phone, lead.email, lead.boxName, lead.boxStage, lead.leadSummary, lead.lastMessage]
+          .filter(Boolean)
+          .some((value) => String(value).toLowerCase().includes(search));
+
+      return statusMatches && laneMatches && searchMatches;
+    })
+    .sort((a, b) => compareActivityDesc(activityTimestamp(a), activityTimestamp(b)));
+  const needsAttention = activityLeads.filter((lead) => lead.needsHuman || lead.clientReplied).slice(0, 6);
+  const statusOptions = ["contacted", "patient_replied", "needs_staff", "booked"];
+  const hasFilters = filters.q || filters.status || filters.box;
+  const engagementCards = [
+    {
+      label: "Contacted",
+      value: metrics?.aiActionedTotal ?? sourceLeads.filter((lead) => lead.aiActioned || lead.actioned).length,
+      detail: `${Math.round(((metrics?.aiActionedTotal ?? 0) / total) * 100)}% of leads`,
+    },
+    {
+      label: "Patient replied",
+      value: metrics?.clientRepliedTotal ?? sourceLeads.filter((lead) => lead.clientReplied).length,
+      detail: "Replies to review",
+    },
+    {
+      label: "Needs staff",
+      value: metrics?.needsHumanTotal ?? 0,
+      detail: "Requires follow-up",
+    },
+    {
+      label: "Booked",
+      value: metrics?.bookedTotal ?? 0,
+      detail: `${Math.round(((metrics?.bookedTotal ?? 0) / total) * 100)}% booked`,
+    },
+  ];
+
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
+    <div className="space-y-4">
       <div className="rounded-[2rem] bg-white p-5 shadow-sm">
-        <h2 className="text-lg font-semibold">Activity</h2>
-        <div className="mt-4 divide-y divide-line">
-          {data.activity.map((item) => (
-            <div key={item.id} className="py-4">
-              <p className="font-semibold">{item.title}</p>
-              <p className="mt-1 text-sm text-ink/55">{item.description}</p>
-              <p className="mt-2 text-xs text-ink/35">{item.createdAt}</p>
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-ink/40">Activity</p>
+            <h2 className="mt-2 text-2xl font-semibold tracking-tight">Follow-up that needs attention.</h2>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-ink/50">
+              Track contacted leads, patient replies, bookings, and conversations.
+            </p>
+          </div>
+          {hasFilters && (
+            <button
+              type="button"
+              onClick={() => setFilters(emptyActivityFilters)}
+              className="rounded-full bg-mist px-3 py-2 text-xs font-semibold text-ink/55 transition hover:text-ink"
+            >
+              Clear filters
+            </button>
+          )}
+        </div>
+        <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {engagementCards.map((card) => (
+            <div key={card.label} className="rounded-2xl bg-mist/70 px-4 py-4">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-ink/40">{card.label}</p>
+              <p className="mt-2 text-3xl font-semibold tracking-tight">{card.value.toLocaleString()}</p>
+              <p className="mt-1 text-xs text-ink/45">{card.detail}</p>
             </div>
           ))}
         </div>
       </div>
+
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="overflow-hidden rounded-[2rem] bg-white shadow-sm">
+          <div className="border-b border-line px-5 py-4">
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <h3 className="font-semibold">Recent activity</h3>
+                <p className="mt-1 text-sm text-ink/50">
+                  Open a lead to review the conversation and outreach timeline.
+                </p>
+              </div>
+              <p className="text-xs text-ink/35">
+                Showing {activityLeads.length.toLocaleString()} active leads
+              </p>
+            </div>
+            <div className="mt-4 grid gap-2 md:grid-cols-[minmax(0,1.4fr)_1fr_1fr]">
+              <input
+                value={filters.q}
+                onChange={(event) => setFilters((current) => ({ ...current, q: event.target.value }))}
+                placeholder="Search patient, phone, lane, or summary"
+                className="rounded-2xl border border-line bg-mist/50 px-4 py-3 text-sm outline-none transition focus:border-pine/30 focus:bg-white"
+              />
+              <FilterSelect
+                label="Status"
+                value={filters.status}
+                options={statusOptions}
+                onChange={(value) => setFilters((current) => ({ ...current, status: value }))}
+              />
+              <FilterSelect
+                label="Lane"
+                value={filters.box}
+                options={data.facets?.boxes ?? []}
+                onChange={(value) => setFilters((current) => ({ ...current, box: value }))}
+              />
+            </div>
+          </div>
+          <div className="divide-y divide-line">
+            {activityLeads.length ? activityLeads.map((lead) => (
+              <ActivityLeadRow
+                key={lead.id}
+                lead={lead}
+                selected={selectedLeadId === lead.id}
+                onSelect={() => onSelectLead(lead.id)}
+              />
+            )) : (
+              <div className="px-5 py-12 text-center">
+                <p className="font-semibold">No activity matches these filters.</p>
+                <p className="mt-1 text-sm text-ink/50">Clear the filters or try a wider search.</p>
+              </div>
+            )}
+          </div>
+        </div>
+        <ActivitySidePanel leads={needsAttention} lanes={data.laneSummary ?? []} onSelectLead={onSelectLead} />
+      </div>
+    </div>
+  );
+}
+
+function ActivityLeadRow({
+  lead,
+  selected,
+  onSelect,
+}: {
+  lead: DentalLead;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className={`w-full px-5 py-4 text-left transition hover:bg-mist ${selected ? "bg-mist" : ""}`}
+    >
+      <div className="flex items-start gap-3">
+        <span
+          className={`mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl text-sm font-semibold ${
+            lead.clientReplied
+              ? "bg-sky-50 text-sky-700"
+              : lead.needsHuman
+                ? "bg-red-50 text-red-700"
+                : "bg-pine text-lime"
+          }`}
+        >
+          {lead.clientReplied ? "R" : lead.needsHuman ? "!" : "A"}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="flex flex-wrap items-center gap-2">
+            <span className="truncate font-semibold">{lead.name}</span>
+            {lead.clientReplied && <LanePill label="Patient replied" muted />}
+            {lead.needsHuman && <LanePill label="Needs staff" muted />}
+            {lead.status === "booked" && <LanePill label="Booked" muted />}
+          </span>
+          <span className="mt-1 flex flex-wrap gap-1.5">
+            <LanePill label={lead.boxName ?? "Unassigned"} />
+            <LanePill label={lead.boxStage ?? lead.status} muted />
+            <LanePill label={`${lead.conversationCount.toLocaleString()} messages`} muted />
+          </span>
+          <span className="mt-2 block text-sm leading-6 text-ink/55">
+            {lead.leadSummary ?? lead.lastMessage}
+          </span>
+          <span className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-medium text-ink/35">
+            <span>Enquiry {formatShortDate(lead.becameLeadAt)}</span>
+            <span>
+              {activityTimestamp(lead)
+                ? `Contacted ${formatShortDate(activityTimestamp(lead))}`
+                : "Not contacted yet"}
+            </span>
+            <span>Updated {formatShortDate(lead.lastUpdatedAt ?? lead.updatedAt)}</span>
+          </span>
+        </span>
+      </div>
+    </button>
+  );
+}
+
+function ActivitySidePanel({
+  leads,
+  lanes,
+  onSelectLead,
+}: {
+  leads: DentalLead[];
+  lanes: NonNullable<DentalDashboardData["laneSummary"]>;
+  onSelectLead: (leadId: string) => void;
+}) {
+  return (
+    <div className="space-y-4">
       <div className="rounded-[2rem] bg-white p-5 shadow-sm">
-        <h3 className="font-semibold">Source health</h3>
-        <p className="mt-2 text-sm text-ink/55">{data.sourceHealth.detail}</p>
+        <h3 className="font-semibold">Needs attention</h3>
+        <div className="mt-4 divide-y divide-line">
+          {leads.length ? leads.map((lead) => (
+            <button
+              key={lead.id}
+              type="button"
+              onClick={() => onSelectLead(lead.id)}
+              className="block w-full py-3 text-left text-sm transition hover:text-pine"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <p className="truncate font-semibold">{lead.name}</p>
+                <span className="text-xs text-ink/35">{formatShortDate(lead.lastUpdatedAt ?? lead.updatedAt)}</span>
+              </div>
+              <p className="mt-1 line-clamp-2 text-ink/50">{lead.leadSummary ?? lead.lastMessage}</p>
+            </button>
+          )) : (
+            <p className="rounded-2xl bg-mist px-4 py-5 text-sm text-ink/50">No patient replies need attention.</p>
+          )}
+        </div>
+      </div>
+
+      <div className="rounded-[2rem] bg-white p-5 shadow-sm">
+        <h3 className="font-semibold">Top lanes</h3>
         <div className="mt-4 space-y-2">
-          {data.integrations.map((integration) => (
-            <div key={integration.id} className="flex items-center justify-between rounded-2xl bg-mist px-4 py-3 text-sm">
-              <span className="font-semibold">{integration.displayName}</span>
-              <span className="text-ink/50">{integration.healthLabel}</span>
+          {lanes.slice(0, 6).map((lane) => (
+            <div key={lane.name} className="rounded-2xl bg-mist px-4 py-3 text-sm">
+              <div className="flex items-center justify-between gap-3">
+                <span className="truncate font-semibold">{lane.name}</span>
+                <span className="tabular-nums text-ink/50">{lane.total.toLocaleString()}</span>
+              </div>
+              <div className="mt-2 grid grid-cols-3 gap-2 text-[11px] text-ink/40">
+                <span>{lane.aiActioned.toLocaleString()} contacted</span>
+                <span>{lane.needsHuman.toLocaleString()} staff</span>
+                <span>{lane.booked.toLocaleString()} booked</span>
+              </div>
             </div>
           ))}
         </div>
       </div>
     </div>
   );
+}
+
+// Activity order = when our agent last messaged them: last outbound -> actioned_at
+// (matches Boxly). No ai_actioned_at/updatedAt/becameLeadAt fallback; never-contacted
+// leads sort last (nulls last).
+function activityTimestamp(lead: DentalLead): string | null {
+  return lead.lastOutboundAt ?? lead.actionedAt ?? null;
+}
+
+function compareActivityDesc(a: string | null, b: string | null): number {
+  if (a && b) return b.localeCompare(a);
+  if (a) return -1;
+  if (b) return 1;
+  return 0;
 }
 
 function AgentPanel({
@@ -432,15 +1042,15 @@ function AgentPanel({
   return (
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
       <div className="rounded-[2rem] bg-white p-5 shadow-sm">
-        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-ink/40">Agent Builder</p>
-        <h2 className="mt-2 text-2xl font-semibold tracking-tight">Behavior and knowledge only.</h2>
+        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-ink/40">Assistant</p>
+        <h2 className="mt-2 text-2xl font-semibold tracking-tight">Messages and guidance.</h2>
         <label className="mt-5 block text-sm font-semibold">First WhatsApp message</label>
         <textarea
           value={firstMessage}
           onChange={(event) => onFirstMessage(event.target.value)}
           className="mt-2 min-h-28 w-full rounded-2xl border border-line bg-mist/50 p-4 text-sm outline-none focus:ring-2 focus:ring-lime"
         />
-        <label className="mt-5 block text-sm font-semibold">Master prompt</label>
+        <label className="mt-5 block text-sm font-semibold">Assistant guidance</label>
         <textarea
           value={prompt}
           onChange={(event) => onPrompt(event.target.value)}
@@ -450,7 +1060,7 @@ function AgentPanel({
           onClick={onSave}
           className="mt-4 rounded-full bg-pine px-6 py-3 text-sm font-semibold text-lime transition hover:brightness-110"
         >
-          {saveState === "saving" ? "Saving..." : saveState === "saved" ? "Saved as draft" : "Save draft"}
+          {saveState === "saving" ? "Saving..." : saveState === "saved" ? "Saved" : "Save changes"}
         </button>
       </div>
       <div className="rounded-[2rem] bg-white p-5 shadow-sm">
@@ -483,7 +1093,7 @@ function ConnectPanel({
   return (
     <div className="grid gap-4 lg:grid-cols-2">
       <div className="rounded-[2rem] bg-white p-5 shadow-sm">
-        <h2 className="text-lg font-semibold">Connectors</h2>
+        <h2 className="text-lg font-semibold">Connections</h2>
         <div className="mt-4 space-y-3">
           {data.integrations.map((integration) => (
             <div key={integration.id} className="rounded-2xl border border-line p-4">
@@ -499,16 +1109,16 @@ function ConnectPanel({
         </div>
       </div>
       <div className="rounded-[2rem] bg-white p-5 shadow-sm">
-        <h2 className="text-lg font-semibold">n8n Drafts</h2>
+        <h2 className="text-lg font-semibold">Automation setup</h2>
         <p className="mt-2 text-sm leading-6 text-ink/55">
-          Provisioning creates inactive dry-run records only. It does not activate workflows, trigger webhooks, send WhatsApp messages, book in Dentally, or create Stripe payments.
+          Prepare the follow-up and booking automations for this practice. Nothing goes live until you approve it.
         </p>
         <button
           onClick={onProvision}
           disabled={provisioning}
           className="mt-4 rounded-full bg-pine px-6 py-3 text-sm font-semibold text-lime transition hover:brightness-110 disabled:opacity-50"
         >
-          {provisioning ? "Creating drafts..." : "Create inactive drafts"}
+          {provisioning ? "Preparing..." : "Prepare automations"}
         </button>
         <div className="mt-4 space-y-2">
           {data.workflows.length ? (
@@ -516,14 +1126,14 @@ function ConnectPanel({
               <div key={workflow.id} className="rounded-2xl bg-mist px-4 py-3 text-sm">
                 <div className="flex items-center justify-between gap-3">
                   <span className="font-semibold">{workflow.displayName}</span>
-                  <span className="text-ink/50">{workflow.active ? "Active" : "Inactive"}</span>
+                  <span className="text-ink/50">{workflow.active ? "Live" : "Not live"}</span>
                 </div>
-                <p className="mt-1 text-xs text-ink/45">{workflow.templateKey}</p>
+                <p className="mt-1 text-xs text-ink/45">{workflow.launchReady ? "Ready to review" : "Needs review"}</p>
               </div>
             ))
           ) : (
             <p className="rounded-2xl bg-mist px-4 py-5 text-sm text-ink/50">
-              No workflow drafts yet.
+              No automations prepared yet.
             </p>
           )}
         </div>
@@ -544,12 +1154,47 @@ function LanePill({ label, muted = false }: { label: string; muted?: boolean }) 
   );
 }
 
+function Detail({ label, value, wide = false }: { label: string; value: string; wide?: boolean }) {
+  return (
+    <div className={wide ? "sm:col-span-2" : ""}>
+      <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-ink/35">{label}</p>
+      <p className="mt-1 text-ink/70">{value}</p>
+    </div>
+  );
+}
+
+function formatDateTime(value?: string | null) {
+  if (!value) return "Unknown";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Unknown";
+  return date.toLocaleString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatShortDate(value?: string | null) {
+  if (!value) return "Unknown";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Unknown";
+  return date.toLocaleDateString("en-GB", {
+    day: "2-digit",
+    month: "short",
+  });
+}
+
+function humanize(value: string) {
+  return value.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
 function buildStats(leads: DentalLead[], metrics?: DentalDashboardData["metrics"]) {
   return {
     total: metrics?.leadTotal ?? leads.length,
     aiActioned:
       metrics?.aiActionedTotal ??
-      leads.filter((lead) => lead.messages.some((message) => message.aiGenerated)).length,
+      leads.filter((lead) => lead.aiActioned || lead.messages.some((message) => message.aiGenerated)).length,
     needsHuman: metrics?.needsHumanTotal ?? leads.filter((lead) => lead.needsHuman).length,
     booked: metrics?.bookedTotal ?? leads.filter((lead) => lead.status === "booked").length,
   };

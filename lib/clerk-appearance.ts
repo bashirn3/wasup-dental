@@ -40,13 +40,13 @@ export const clerkLocalization = {
   signIn: {
     start: {
       title: "Sign in",
-      subtitle: "Use Google or your workshop email to continue.",
+      subtitle: "Use Google or your practice email to continue.",
     },
   },
   signUp: {
     start: {
       title: "Create account",
-      subtitle: "One free account keeps your garage safe.",
+      subtitle: "One account keeps your practice workspace safe.",
     },
   },
 };

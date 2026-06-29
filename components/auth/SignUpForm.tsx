@@ -14,7 +14,7 @@ type Step = "identifier" | "password" | "email_code";
 
 const REDIRECT =
   process.env.NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL ?? POST_AUTH_REDIRECT;
-const DESKTOP_EMAIL_PLACEHOLDER = "you@workshop.co.uk";
+const DESKTOP_EMAIL_PLACEHOLDER = "you@practice.co.uk";
 const MOBILE_EMAIL_PLACEHOLDER = "Email address";
 
 export default function SignUpForm() {

@@ -127,7 +127,7 @@ export function WaSheet({
           <WhatsAppConnectPanel
             key={connectIntent}
             tenantId={tenantId}
-            garageName={garageName}
+            practiceName={garageName}
             initialPhone={panelPhone}
             reconnectInstanceId={connectIntent === "reconnect" ? instanceId : null}
             forcePhoneStep={connectIntent === "change" || connectIntent === "new" || connectIntent === "reconnect"}

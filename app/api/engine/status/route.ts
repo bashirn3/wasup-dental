@@ -3,7 +3,7 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { resolveTenantId } from "@/lib/auth";
 import { isOutreachInProgress } from "@/lib/engine/outbound";
 
-/** Poll whether automatic or manual outreach is actively sending for this garage. */
+/** Poll whether automatic or manual outreach is actively sending for this practice. */
 export async function GET(req: NextRequest) {
   const tenantId = await resolveTenantId(req.nextUrl.searchParams.get("tenantId"));
   if (!tenantId) return NextResponse.json({ error: "missing_tenant" }, { status: 400 });

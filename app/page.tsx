@@ -35,7 +35,7 @@ export default function Landing() {
           For dental practices
         </motion.p>
         <h1 className="max-w-3xl text-balance text-4xl font-semibold leading-[1.05] tracking-tight sm:text-6xl">
-          {["Reactivate dental leads", "from one calm dashboard."].map((line, i) => (
+          {["Follow up dental leads", "from one clean workspace."].map((line, i) => (
             <span key={line} className="block overflow-hidden pb-[0.08em]">
               <motion.span
                 className={`block ${i === 1 ? "text-lime" : ""}`}
@@ -56,8 +56,7 @@ export default function Landing() {
           {...fade(0.32)}
           className="mt-6 max-w-md text-balance text-base text-paper/65 sm:text-lg"
         >
-          Combine Boxly lanes, WhatsApp conversations, Agent Builder controls,
-          Dentally booking, Stripe payments, and n8n drafts in one workspace.
+          Manage patient conversations, assistant replies, and booking follow-up without jumping between tools.
         </motion.p>
         <motion.div {...fade(0.44)} className="mt-10">
           <Link
@@ -74,9 +73,9 @@ export default function Landing() {
         {...fade(0.6)}
         className="flex items-center justify-center gap-8 px-6 pb-8 text-xs text-paper/40"
       >
-        <span>Boxly migration</span>
-        <span>Dentally ready</span>
-        <span>No live actions without approval</span>
+        <span>WhatsApp follow-up</span>
+        <span>Booking-ready</span>
+        <span>Built for dental teams</span>
       </motion.footer>
     </main>
   );

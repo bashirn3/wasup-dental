@@ -116,14 +116,14 @@ export default function DoneStep({ draft, onBack }: Props) {
         </h1>
         <p className="mt-2 max-w-sm text-center text-sm text-paper/70">
           {chosen.map((c) => c.label).join(", ")} ·{" "}
-          {draft.freeRetest ? "staff approval on" : "direct booking draft"} · {draft.tone} tone
+          {draft.freeRetest ? "staff approval on" : "booking review on"} · {draft.tone} tone
         </p>
 
         <p className="mt-3 text-xs text-paper/50">
           {!isLoaded && "Checking account…"}
           {isLoaded && save === "saving" && "Saving..."}
           {isLoaded && save === "saved" && "Saved to your workspace"}
-          {isLoaded && save === "local" && "Saved locally until Supabase is connected"}
+          {isLoaded && save === "local" && "Saved on this device until the workspace is connected"}
           {isLoaded && save === "error" && "Couldn't sync yet. We kept your local copy."}
           {isLoaded && save === "claimed" && "This practice is already claimed by another account."}
           {isLoaded && save === "auth" && "One last thing: an account keeps your workspace safe"}

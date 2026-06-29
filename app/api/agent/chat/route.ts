@@ -8,10 +8,10 @@ const AZURE_KEY = process.env.AZURE_OPENAI_API_KEY;
 const AZURE_DEPLOYMENT = process.env.AZURE_OPENAI_DEPLOYMENT;
 
 const DEMO_REPLIES = [
-  "Of course! What's your vehicle registration, and which day suits you best?",
-  "We've got slots Tuesday morning and Thursday afternoon next week. Shall I pencil you in?",
-  "Lovely, that's logged. The team will confirm your slot shortly. Anything else I can help with?",
-  "An MOT with us takes about 45 minutes, and the retest is free within 10 working days.",
+  "Of course. Which treatment are you interested in, and which day suits you best?",
+  "We've got consultation slots Tuesday morning and Thursday afternoon next week. Shall I pencil you in?",
+  "Lovely, that's logged. The team will confirm your appointment shortly. Anything else I can help with?",
+  "A consultation usually takes around 30 minutes. The dental team will confirm the best next step for you.",
 ];
 
 async function callOpenAI(messages: ChatMessage[]): Promise<string> {
