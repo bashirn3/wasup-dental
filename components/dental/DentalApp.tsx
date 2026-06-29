@@ -1238,12 +1238,9 @@ function AnalyticsPanel({
   const totalLeads = metrics?.leadTotal ?? stats.total;
   const aiActioned = metrics?.aiActionedTotal ?? stats.aiActioned;
   const responded = metrics?.clientRepliedTotal ?? 0;
-  const booked = metrics?.bookedTotal ?? stats.booked;
   const urgent = metrics?.urgentTotal ?? stats.needsHuman;
-  const reactivationCount = metrics?.reactivationTotal ?? 0;
   const today = metrics?.todayTotal ?? 0;
 
-  const reactivation = analytics?.reactivation ?? { contacted: 0, responded: 0, booked: 0 };
   const needsAttention = analytics?.needsAttention ?? [];
 
   const treatmentData = (analytics?.treatmentBreakdown ?? [])
@@ -1281,36 +1278,12 @@ function AnalyticsPanel({
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-7">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         <StatCard label="Total Leads" value={totalLeads} />
         <StatCard label="Urgent" value={urgent} sub="needs attention" />
-        <StatCard label="Reactivation" value={reactivationCount} sub="campaign patients" />
         <StatCard label="AI Actioned" value={aiActioned} sub="handled by agent" />
         <StatCard label="Patients Engaged" value={responded} sub={`${pct(responded, aiActioned)}% responded`} />
-        <StatCard label="Bookings Taken" value={booked} sub={`${pct(booked, responded || aiActioned)}% booked`} />
         <StatCard label="Today" value={today} sub="new today" />
-      </div>
-
-      <div className="rounded-[2rem] bg-white p-5 shadow-sm">
-        <h3 className="text-[12px] font-semibold uppercase tracking-wider text-ink/45">Re-activations</h3>
-        <p className="mt-1 text-xs text-ink/45">Funnel for patients in the reactivation campaign.</p>
-        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
-          {[
-            { label: "AI contacted", value: reactivation.contacted, percent: null as number | null },
-            { label: "Patient responded", value: reactivation.responded, percent: pct(reactivation.responded, reactivation.contacted) },
-            { label: "Booked", value: reactivation.booked, percent: pct(reactivation.booked, reactivation.responded || reactivation.contacted) },
-          ].map((item) => (
-            <div key={item.label} className="rounded-2xl border border-line bg-mist/40 p-4">
-              <p className="text-[11px] font-semibold uppercase tracking-wide text-ink/45">{item.label}</p>
-              <div className="mt-2 flex items-baseline gap-2">
-                <p className="text-2xl font-semibold tracking-tight tabular-nums">{item.value.toLocaleString()}</p>
-                {item.percent !== null ? (
-                  <span className="text-sm font-bold tabular-nums text-pine">{item.percent}%</span>
-                ) : null}
-              </div>
-            </div>
-          ))}
-        </div>
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
