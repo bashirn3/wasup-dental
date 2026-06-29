@@ -348,7 +348,9 @@ export default function DentalApp() {
         ) : null}
 
         <section className="mt-4 flex-1">
-          {tab === "dashboard" && <AnalyticsPanel data={data} stats={stats} />}
+          {tab === "dashboard" && (
+            <AnalyticsPanel data={data} stats={stats} practiceId={data.practiceId ?? null} />
+          )}
           {tab === "leads" && (
             <LeadsPanel
               leads={leads}
@@ -1172,15 +1174,61 @@ function EmptyChart({ hint }: { hint: string }) {
   );
 }
 
+const ANALYTICS_RANGES: [string, string][] = [
+  ["all_time", "All time"],
+  ["today", "Today"],
+  ["last_7_days", "7 days"],
+  ["last_30_days", "30 days"],
+  ["last_3_months", "3 months"],
+];
+
+type AnalyticsOverride = {
+  metrics: DentalDashboardData["metrics"];
+  analytics: DentalDashboardData["analytics"];
+};
+
 function AnalyticsPanel({
   data,
   stats,
+  practiceId,
 }: {
   data: DentalDashboardData;
   stats: { total: number; aiActioned: number; needsHuman: number; booked: number };
+  practiceId: string | null;
 }) {
-  const metrics = data.metrics;
-  const analytics = data.analytics;
+  const [range, setRange] = useState("all_time");
+  const [override, setOverride] = useState<AnalyticsOverride | null>(null);
+  const [rangeLoading, setRangeLoading] = useState(false);
+
+  useEffect(() => {
+    if (range === "all_time") {
+      setOverride(null);
+      return;
+    }
+    let cancelled = false;
+    setRangeLoading(true);
+    const params = new URLSearchParams({ range });
+    if (practiceId) params.set("practiceId", practiceId);
+    fetch(`/api/analytics?${params.toString()}`, { cache: "no-store" })
+      .then((res) => res.json())
+      .then((payload) => {
+        if (!cancelled && payload.ok) {
+          setOverride({ metrics: payload.metrics, analytics: payload.analytics });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setOverride(null);
+      })
+      .finally(() => {
+        if (!cancelled) setRangeLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [range, practiceId]);
+
+  const metrics = override?.metrics ?? data.metrics;
+  const analytics = override?.analytics ?? data.analytics;
 
   const totalLeads = metrics?.leadTotal ?? stats.total;
   const aiActioned = metrics?.aiActionedTotal ?? stats.aiActioned;
@@ -1207,6 +1255,27 @@ function AnalyticsPanel({
 
   return (
     <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <h2 className="text-lg font-semibold tracking-tight">Dashboard</h2>
+          {rangeLoading ? <span className="text-xs text-ink/40">Updating…</span> : null}
+        </div>
+        <div className="flex flex-wrap gap-1 rounded-full bg-mist p-1">
+          {ANALYTICS_RANGES.map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setRange(key)}
+              className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+                range === key ? "bg-pine text-lime" : "text-ink/55 hover:text-ink"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-7">
         <StatCard label="Total Leads" value={totalLeads} />
         <StatCard label="Urgent" value={urgent} sub="needs attention" />
