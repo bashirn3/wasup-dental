@@ -1,0 +1,154 @@
+{
+  "name": "Wasup Dental - Draft Config Read",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -640,
+        0
+      ],
+      "id": "draft-manual-trigger",
+      "name": "Manual Trigger Only"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "practice-id",
+              "name": "practiceId",
+              "value": "REPLACE_WITH_PRACTICE_ID",
+              "type": "string"
+            },
+            {
+              "id": "api-base",
+              "name": "dashboardApiBase",
+              "value": "https://agent.wasup.co/dental",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -400,
+        0
+      ],
+      "id": "draft-set-context",
+      "name": "Set Practice Context"
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.dashboardApiBase + '/api/agent-config?practiceId=' + encodeURIComponent($json.practiceId) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.AGENT_CONFIG_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -160,
+        0
+      ],
+      "id": "draft-read-agent-config",
+      "name": "Read Active Agent Config"
+    },
+    {
+      "parameters": {
+        "jsCode": "const config = $json;\nconst stageFilters = config.stageFilters || {};\nconst staffReviewRules = config.staffReviewRules || {};\nconst qualificationRules = config.qualificationRules || {};\nconst selectedStages = Array.isArray(stageFilters.selectedStages) ? stageFilters.selectedStages : [];\n\nconst promptSections = [\n  `Tone: ${config.tone || 'warm'}`,\n  '',\n  'Base prompt:',\n  config.prompt || '',\n  '',\n  'Prompt notes from dashboard:',\n  qualificationRules.promptNotes || 'No dashboard prompt notes saved.',\n  '',\n  'Safety rules:',\n  ...(config.safetyRules || []).map((rule) => `- ${rule}`),\n  '',\n  'Staff review rule:',\n  staffReviewRules.rule || 'Escalate finance, complaints, medical uncertainty, and same-day appointment requests.',\n  '',\n  'Allowed Boxly stages:',\n  selectedStages.length ? selectedStages.map((item) => `- ${item.box} / ${item.stage}`) : ['- No stage filter configured.'],\n];\n\nreturn [{\n  json: {\n    practiceId: config.practiceId,\n    configVersion: config.versionNumber,\n    launchState: config.launchState || 'draft',\n    autoContactEnabled: Boolean(config.autoContactEnabled),\n    firstMessage: config.firstMessage,\n    promptForAiNode: promptSections.join('\\n'),\n    controlSettings: {\n      stageFilters,\n      selectedStages,\n      priorityLanes: qualificationRules.priorityLanes || [],\n      reminder: stageFilters.reminder || null,\n      autoTrigger: stageFilters.autoTrigger || null,\n      staffReviewRules,\n    },\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        80,
+        0
+      ],
+      "id": "draft-compose-ai-context",
+      "name": "Compose AI Context"
+    },
+    {
+      "parameters": {
+        "jsCode": "const liveConfigWouldAllowSend = $json.launchState === 'live' && $json.autoContactEnabled === true;\n\nreturn [{\n  json: {\n    ...$json,\n    liveConfigWouldAllowSend,\n    sendAllowed: false,\n    reason: liveConfigWouldAllowSend\n      ? 'Live config detected, but this draft workflow keeps sends disabled by design.'\n      : 'Config is draft, paused, preview, or auto-contact is disabled.',\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        320,
+        0
+      ],
+      "id": "draft-send-gate",
+      "name": "Draft Send Gate"
+    }
+  ],
+  "connections": {
+    "Manual Trigger Only": {
+      "main": [
+        [
+          {
+            "node": "Set Practice Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Practice Context": {
+      "main": [
+        [
+          {
+            "node": "Read Active Agent Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Active Agent Config": {
+      "main": [
+        [
+          {
+            "node": "Compose AI Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compose AI Context": {
+      "main": [
+        [
+          {
+            "node": "Draft Send Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "versionId": "draft-local-only",
+  "triggerCount": 0,
+  "tags": []
+}

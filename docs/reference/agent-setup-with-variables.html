@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>RapidMOT — Agent Setup (with dynamic variables)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg-top: #0B241C;
+    --bg-bottom: #0E2E23;
+    --lime: #C8F23C;
+    --lime-hover: #D6F95C;
+    --ink: #0B241C;
+    --paper: #F2F5EF;
+    --muted: #9DB3A7;
+    --faint: #7E948A;
+    --card: rgba(255,255,255,0.05);
+    --card-border: rgba(255,255,255,0.09);
+    --wa-paper: #EFE7DC;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    min-height: 100dvh;
+    background: linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bottom) 100%);
+    font-family: 'Instrument Sans', sans-serif;
+    color: var(--paper);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  .wrap { width: 100%; max-width: 580px; padding: 22px 24px 36px; }
+  .topbar { display: flex; justify-content: space-between; align-items: center; padding-bottom: 18px; }
+  .logo { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 18px; letter-spacing: -0.01em; }
+  .logo span { color: var(--lime); }
+  .progress { display: flex; gap: 5px; align-items: center; }
+  .progress i { width: 20px; height: 4px; border-radius: 2px; background: rgba(255,255,255,0.14); }
+  .progress i.on { background: var(--lime); }
+
+  /* Tabs */
+  .tabs { display: flex; gap: 4px; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.08); border-radius: 999px; padding: 4px; margin-bottom: 14px; }
+  .tabs button { flex: 1; border: 0; border-radius: 999px; padding: 12px 8px; font: 600 15px 'Instrument Sans', sans-serif; color: var(--muted); background: transparent; cursor: pointer; transition: all .2s; }
+  .tabs button.on { background: var(--lime); color: var(--ink); }
+
+  .card { background: var(--card); border: 1px solid var(--card-border); border-radius: 18px; padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
+  .label { font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--faint); font-weight: 600; }
+
+  textarea {
+    min-height: 76px; border-radius: 12px; background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.12); padding: 12px 16px; font: 400 14px/1.5 'Instrument Sans', sans-serif;
+    color: #fff; outline: none; width: 100%; resize: vertical;
+  }
+  textarea:focus { border-color: var(--lime); }
+  textarea::placeholder { color: #5C7268; }
+
+  /* Variable chips */
+  .var-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .var-chip {
+    height: 32px; padding: 0 12px; border-radius: 999px; border: 1px solid rgba(200,242,60,0.4);
+    background: rgba(200,242,60,0.15); color: var(--lime); font: 600 12px 'Instrument Sans', sans-serif; cursor: pointer; transition: all .15s;
+  }
+  .var-chip:hover { background: rgba(200,242,60,0.25); }
+  .var-chip:active { transform: scale(0.95); }
+
+  /* WhatsApp first-message editor */
+  .wa-wall { background: var(--wa-paper); border-radius: 12px; padding: 14px; }
+  .wa-bubble {
+    background: #fff; color: #111B21; border-radius: 10px; border-top-left-radius: 3px;
+    box-shadow: 0 1px 1px rgba(0,0,0,0.10); padding: 10px 12px; font-size: 14px; line-height: 1.5;
+    max-width: 92%; outline: none; min-height: 24px;
+  }
+  .wa-bubble:empty::before { content: attr(data-placeholder); color: #98A8A0; }
+  /* The green block for a dynamic variable */
+  .var-token {
+    display: inline-block; background: var(--lime); color: var(--ink); border-radius: 6px;
+    padding: 0 7px; margin: 0 1px; font-weight: 700; font-size: 13px; line-height: 1.7; white-space: nowrap;
+  }
+
+  .preview { font-size: 12px; color: var(--faint); }
+  .preview b { color: #C8D8CC; font-weight: 500; }
+
+  .cta { height: 54px; border: 0; border-radius: 14px; background: var(--lime); color: var(--ink); font: 700 16px 'Instrument Sans', sans-serif; display: flex; align-items: center; justify-content: center; gap: 8px; cursor: pointer; width: 100%; }
+  .cta:hover { background: var(--lime-hover); }
+  .cta:active { transform: scale(0.98); }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div class="logo">Rapid<span>MOT</span></div>
+      <div class="progress"><i class="on"></i><i></i><i></i><i></i></div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="tabs">
+      <button id="tab-chat" class="on" onclick="setView('chat')">Chat</button>
+      <button id="tab-tweak" onclick="setView('tweak')">Tweak</button>
+    </div>
+
+    <!-- TWEAK VIEW (this is where the dynamic variables live) -->
+    <div id="tweak">
+      <div class="card">
+        <div class="label">Extra instructions</div>
+        <textarea placeholder="e.g. We're closed bank holidays. Mention free local pickup for bookings before 9am."></textarea>
+      </div>
+
+      <div class="card">
+        <div class="label">Tone</div>
+        <div class="tabs" style="margin:0;">
+          <button class="on" onclick="setTone(this,'friendly')">Friendly</button>
+          <button onclick="setTone(this,'professional')">Professional</button>
+          <button onclick="setTone(this,'straight')">Direct</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="label">First message</div>
+        <div style="font-size:12px;color:var(--muted);">Tap to drop a dynamic value into the message:</div>
+        <div class="var-chips">
+          <button class="var-chip" onclick="insertToken('{{name}}')">Name</button>
+          <button class="var-chip" onclick="insertToken('{{phone}}')">Mobile</button>
+          <button class="var-chip" onclick="insertToken('{{plate}}')">Plate</button>
+          <button class="var-chip" onclick="insertToken('{{in_days}}')">In days</button>
+        </div>
+        <div class="wa-wall">
+          <div id="fm" class="wa-bubble" contenteditable="true"
+               data-placeholder="Hi {{name}}! Your MOT on {{plate}} is due {{in_days}}…"
+               oninput="onEdit()"></div>
+        </div>
+        <div class="preview">Customer sees: <b id="preview"></b></div>
+      </div>
+
+      <button class="cta" onclick="apply()">Apply &amp; restart chat <span>→</span></button>
+    </div>
+  </div>
+
+<script>
+  // ── Dynamic variables ────────────────────────────────────────────────
+  const VARIABLES = [
+    { token: "{{name}}",    label: "Name",    sample: "Sarah" },
+    { token: "{{phone}}",   label: "Mobile",  sample: "+44 7835 156367" },
+    { token: "{{plate}}",   label: "Plate",   sample: "AB12 CDE" },
+    { token: "{{in_days}}", label: "In days", sample: "in 14 days" },
+  ];
+  const TOKEN_RE = /(\{\{[a-z_]+\}\})/g;
+  const labelFor = (t) => (VARIABLES.find((v) => v.token === t) || {}).label || t;
+  const sampleFor = (t) => (VARIABLES.find((v) => v.token === t) || {}).sample || t;
+  const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  function chipHtml(token) {
+    return '<span class="var-token" contenteditable="false" data-token="' + token + '">' + esc(labelFor(token)) + '</span>';
+  }
+
+  // {{template}}  ->  HTML with green blocks
+  function templateToHtml(t) {
+    if (!t) return "";
+    return t.split(TOKEN_RE).map((part) => {
+      if (/^\{\{[a-z_]+\}\}$/.test(part) && VARIABLES.some((v) => v.token === part)) return chipHtml(part);
+      return esc(part).replace(/\n/g, "<br>");
+    }).join("");
+  }
+
+  // contentEditable DOM  ->  {{template}}
+  function domToTemplate(el) {
+    let out = "";
+    el.childNodes.forEach((node) => {
+      if (node.nodeType === Node.TEXT_NODE) out += node.nodeValue;
+      else if (node.nodeName === "BR") out += "\n";
+      else if (node.nodeType === Node.ELEMENT_NODE) {
+        const tok = node.getAttribute && node.getAttribute("data-token");
+        out += tok ? tok : domToTemplate(node);
+      }
+    });
+    return out;
+  }
+
+  // {{template}}  ->  resolved message with sample data
+  function resolve(t) {
+    return (t || "").replace(TOKEN_RE, (m) => (VARIABLES.some((v) => v.token === m) ? sampleFor(m) : m));
+  }
+
+  const fm = document.getElementById("fm");
+
+  function insertToken(token) {
+    fm.focus();
+    const sel = window.getSelection();
+    let range;
+    if (sel && sel.rangeCount && fm.contains(sel.anchorNode)) {
+      range = sel.getRangeAt(0);
+      range.deleteContents();
+    } else {
+      range = document.createRange();
+      range.selectNodeContents(fm);
+      range.collapse(false);
+    }
+    const tpl = document.createElement("template");
+    tpl.innerHTML = chipHtml(token) + "\u00A0"; // chip + a space
+    const frag = tpl.content;
+    const last = frag.lastChild;
+    range.insertNode(frag);
+    if (last && sel) {
+      const after = document.createRange();
+      after.setStartAfter(last);
+      after.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(after);
+    }
+    onEdit();
+  }
+
+  function onEdit() {
+    const template = domToTemplate(fm);
+    document.getElementById("preview").textContent = resolve(template) || "—";
+    // `template` is what you save to the backend (keeps the {{token}} form).
+    window.__firstMessageTemplate = template;
+  }
+
+  // ── View / tone toggles (demo only) ──────────────────────────────────
+  function setView(v) {
+    document.getElementById("tab-chat").classList.toggle("on", v === "chat");
+    document.getElementById("tab-tweak").classList.toggle("on", v === "tweak");
+  }
+  function setTone(btn, tone) {
+    btn.parentElement.querySelectorAll("button").forEach((b) => b.classList.remove("on"));
+    btn.classList.add("on");
+  }
+  function apply() {
+    alert("Saved template:\n\n" + (window.__firstMessageTemplate || domToTemplate(fm)));
+  }
+
+  // Seed with an example so you can see the green blocks immediately.
+  fm.innerHTML = templateToHtml("Hi {{name}}! Your {{plate}} MOT is due {{in_days}}. Want me to book you in?");
+  setView("tweak");
+  onEdit();
+</script>
+</body>
+</html>
