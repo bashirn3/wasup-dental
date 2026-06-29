@@ -1,13 +1,27 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Line,
+  LineChart,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import AccountMenu from "@/components/auth/AccountMenu";
 import { MIcon } from "@/components/mot/icons";
 import { defaultAgentPrompt, defaultFirstMessage, treatmentLabels } from "@/lib/dental-demo-data";
 import type { DentalDashboardData, DentalLead, DentalMessage } from "@/lib/dental-types";
 
-type TabKey = "leads" | "activity" | "agent" | "connect";
+type TabKey = "dashboard" | "leads" | "activity" | "agent" | "connect";
 type LeadFilters = {
   q: string;
   status: string;
@@ -21,6 +35,7 @@ type ActivityFilters = {
 };
 
 const tabs: [TabKey, string, typeof MIcon.users][] = [
+  ["dashboard", "Dashboard", MIcon.chart],
   ["leads", "Leads", MIcon.users],
   ["activity", "Activity", MIcon.check],
   ["agent", "Agent", MIcon.spark],
@@ -34,7 +49,7 @@ const emptyFilters: LeadFilters = { q: "", status: "", box: "", stage: "" };
 const emptyActivityFilters: ActivityFilters = { q: "", status: "", box: "" };
 
 export default function DentalApp() {
-  const [tab, setTab] = useState<TabKey>("leads");
+  const [tab, setTab] = useState<TabKey>("dashboard");
   const [data, setData] = useState<DentalDashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
@@ -333,6 +348,7 @@ export default function DentalApp() {
         ) : null}
 
         <section className="mt-4 flex-1">
+          {tab === "dashboard" && <AnalyticsPanel data={data} stats={stats} />}
           {tab === "leads" && (
             <LeadsPanel
               leads={leads}
@@ -1075,6 +1091,278 @@ function compareActivityDesc(a: string | null, b: string | null): number {
   if (a) return -1;
   if (b) return 1;
   return 0;
+}
+
+const CHART_COLORS = [
+  "#0b3d2e",
+  "#7bb661",
+  "#f4a259",
+  "#e76f51",
+  "#2a9d8f",
+  "#577590",
+  "#b5179e",
+  "#3a86ff",
+  "#ffbe0b",
+];
+
+function pct(part: number, total: number): number {
+  if (!total) return 0;
+  return Number(((part / total) * 100).toFixed(1));
+}
+
+function ChartTooltip({
+  active,
+  payload,
+  label,
+}: {
+  active?: boolean;
+  payload?: { value?: number | string; name?: string; color?: string }[];
+  label?: string | number;
+}) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="rounded-xl border border-line bg-white px-3 py-2 shadow-lg">
+      {label != null && (
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-ink/45">{label}</p>
+      )}
+      {payload.map((entry, index) => (
+        <p key={index} className="text-sm font-bold tabular-nums" style={{ color: entry.color ?? "#0b3d2e" }}>
+          {typeof entry.value === "number" ? entry.value.toLocaleString() : entry.value}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+function StatCard({
+  label,
+  value,
+  sub,
+}: {
+  label: string;
+  value: string | number;
+  sub?: string;
+}) {
+  return (
+    <div className="rounded-2xl bg-white p-4 shadow-sm">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-ink/40">{label}</p>
+      <p className="mt-2 text-2xl font-semibold tracking-tight tabular-nums">
+        {typeof value === "number" ? value.toLocaleString() : value}
+      </p>
+      {sub ? <p className="mt-1 text-xs text-ink/45">{sub}</p> : null}
+    </div>
+  );
+}
+
+function ChartCard({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="rounded-[2rem] bg-white p-5 shadow-sm">
+      <h3 className="text-[12px] font-semibold uppercase tracking-wider text-ink/45">{title}</h3>
+      <div className="mt-4">{children}</div>
+    </div>
+  );
+}
+
+function EmptyChart({ hint }: { hint: string }) {
+  return (
+    <div className="flex h-[240px] flex-col items-center justify-center rounded-2xl border border-dashed border-line bg-mist/40 px-6 text-center">
+      <p className="text-sm font-semibold text-ink/70">No data yet</p>
+      <p className="mt-1 text-xs text-ink/45">{hint}</p>
+    </div>
+  );
+}
+
+function AnalyticsPanel({
+  data,
+  stats,
+}: {
+  data: DentalDashboardData;
+  stats: { total: number; aiActioned: number; needsHuman: number; booked: number };
+}) {
+  const metrics = data.metrics;
+  const analytics = data.analytics;
+
+  const totalLeads = metrics?.leadTotal ?? stats.total;
+  const aiActioned = metrics?.aiActionedTotal ?? stats.aiActioned;
+  const responded = metrics?.clientRepliedTotal ?? 0;
+  const booked = metrics?.bookedTotal ?? stats.booked;
+  const urgent = metrics?.urgentTotal ?? stats.needsHuman;
+  const reactivationCount = metrics?.reactivationTotal ?? 0;
+  const today = metrics?.todayTotal ?? 0;
+
+  const reactivation = analytics?.reactivation ?? { contacted: 0, responded: 0, booked: 0 };
+  const needsAttention = analytics?.needsAttention ?? [];
+
+  const treatmentData = (analytics?.treatmentBreakdown ?? [])
+    .map((item) => ({ name: item.label, value: item.total }))
+    .filter((item) => item.value > 0);
+  const sourceData = (analytics?.sourceBreakdown ?? [])
+    .map((item) => ({ name: item.source, value: item.total }))
+    .filter((item) => item.value > 0);
+  const sourceTotal = sourceData.reduce((sum, item) => sum + item.value, 0);
+  const timelineData = (analytics?.timeline ?? []).map((item) => ({
+    date: item.label,
+    count: item.total,
+  }));
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-7">
+        <StatCard label="Total Leads" value={totalLeads} />
+        <StatCard label="Urgent" value={urgent} sub="needs attention" />
+        <StatCard label="Reactivation" value={reactivationCount} sub="campaign patients" />
+        <StatCard label="AI Actioned" value={aiActioned} sub="handled by agent" />
+        <StatCard label="Patients Engaged" value={responded} sub={`${pct(responded, aiActioned)}% responded`} />
+        <StatCard label="Bookings Taken" value={booked} sub={`${pct(booked, responded || aiActioned)}% booked`} />
+        <StatCard label="Today" value={today} sub="new today" />
+      </div>
+
+      <div className="rounded-[2rem] bg-white p-5 shadow-sm">
+        <h3 className="text-[12px] font-semibold uppercase tracking-wider text-ink/45">Re-activations</h3>
+        <p className="mt-1 text-xs text-ink/45">Funnel for patients in the reactivation campaign.</p>
+        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+          {[
+            { label: "AI contacted", value: reactivation.contacted, percent: null as number | null },
+            { label: "Patient responded", value: reactivation.responded, percent: pct(reactivation.responded, reactivation.contacted) },
+            { label: "Booked", value: reactivation.booked, percent: pct(reactivation.booked, reactivation.responded || reactivation.contacted) },
+          ].map((item) => (
+            <div key={item.label} className="rounded-2xl border border-line bg-mist/40 p-4">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-ink/45">{item.label}</p>
+              <div className="mt-2 flex items-baseline gap-2">
+                <p className="text-2xl font-semibold tracking-tight tabular-nums">{item.value.toLocaleString()}</p>
+                {item.percent !== null ? (
+                  <span className="text-sm font-bold tabular-nums text-pine">{item.percent}%</span>
+                ) : null}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <ChartCard title="Leads by Treatment">
+          {treatmentData.length > 0 ? (
+            <ResponsiveContainer width="100%" height={260}>
+              <BarChart data={treatmentData} layout="vertical" margin={{ left: 0, right: 12 }}>
+                <XAxis type="number" fontSize={11} tickLine={false} axisLine={false} />
+                <YAxis dataKey="name" type="category" width={110} fontSize={11} tickLine={false} axisLine={false} />
+                <Tooltip content={<ChartTooltip />} cursor={{ fill: "rgba(0,0,0,0.03)" }} />
+                <Bar dataKey="value" radius={[0, 8, 8, 0]} barSize={16}>
+                  {treatmentData.map((_, index) => (
+                    <Cell key={index} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          ) : (
+            <EmptyChart hint="Treatment breakdown appears once leads have synced." />
+          )}
+        </ChartCard>
+
+        <ChartCard title="Lead Sources">
+          {sourceData.length > 0 ? (
+            <div className="flex items-center gap-6">
+              <div className="h-[200px] w-[200px] flex-shrink-0">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={sourceData}
+                      dataKey="value"
+                      nameKey="name"
+                      cx="50%"
+                      cy="50%"
+                      outerRadius={90}
+                      innerRadius={58}
+                      paddingAngle={3}
+                      stroke="none"
+                    >
+                      {sourceData.map((_, index) => (
+                        <Cell key={index} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip content={<ChartTooltip />} />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="min-w-0 flex-1 space-y-2">
+                {sourceData.map((entry, index) => (
+                  <div key={entry.name} className="flex items-center gap-2.5 text-sm">
+                    <span
+                      className="h-2 w-2 flex-shrink-0 rounded-full"
+                      style={{ backgroundColor: CHART_COLORS[index % CHART_COLORS.length] }}
+                    />
+                    <span className="truncate text-ink/80">{entry.name}</span>
+                    <span className="ml-auto flex-shrink-0 font-semibold tabular-nums">
+                      {entry.value.toLocaleString()}
+                    </span>
+                    <span className="w-[42px] flex-shrink-0 text-right text-xs tabular-nums text-ink/40">
+                      {pct(entry.value, sourceTotal)}%
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <EmptyChart hint="Source breakdown appears once matching leads are present." />
+          )}
+        </ChartCard>
+      </div>
+
+      {timelineData.length > 0 && (
+        <ChartCard title="Leads Over Time">
+          <ResponsiveContainer width="100%" height={200}>
+            <LineChart data={timelineData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.05)" vertical={false} />
+              <XAxis dataKey="date" fontSize={11} tickLine={false} axisLine={false} />
+              <YAxis fontSize={11} tickLine={false} axisLine={false} allowDecimals={false} />
+              <Tooltip content={<ChartTooltip />} />
+              <Line type="monotone" dataKey="count" stroke="#0b3d2e" strokeWidth={2.5} dot={false} activeDot={{ r: 5 }} />
+            </LineChart>
+          </ResponsiveContainer>
+        </ChartCard>
+      )}
+
+      {needsAttention.length > 0 && (
+        <div className="overflow-hidden rounded-[2rem] bg-white shadow-sm">
+          <div className="border-b border-line px-5 py-4">
+            <h3 className="text-[12px] font-semibold uppercase tracking-wider text-ink/45">Needs Attention</h3>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-line text-left text-[11px] uppercase tracking-wider text-ink/40">
+                  <th className="px-5 py-3 font-semibold">Name</th>
+                  <th className="px-5 py-3 font-semibold">Phone</th>
+                  <th className="px-5 py-3 font-semibold">Treatment</th>
+                  <th className="px-5 py-3 font-semibold">Urgency</th>
+                </tr>
+              </thead>
+              <tbody>
+                {needsAttention.map((lead) => (
+                  <tr key={lead.id} className="border-b border-line/60 last:border-0">
+                    <td className="px-5 py-3 font-semibold">{lead.name}</td>
+                    <td className="px-5 py-3 font-mono text-xs text-ink/55">{lead.phone ?? "—"}</td>
+                    <td className="px-5 py-3 text-ink/60">{treatmentLabels[lead.treatment] ?? lead.treatment}</td>
+                    <td className="px-5 py-3">
+                      <span
+                        className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+                          (lead.urgency ?? "").toLowerCase() === "urgent"
+                            ? "bg-red-50 text-red-600"
+                            : "bg-amber-50 text-amber-700"
+                        }`}
+                      >
+                        {lead.urgency ?? "—"}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 const TREATMENT_LABELS: Record<string, string> = {

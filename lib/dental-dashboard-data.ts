@@ -232,6 +232,19 @@ export async function getDentalDashboardData(
       needsHumanTotal: needsHuman.count ?? leadRows.filter((lead) => lead.needs_human).length,
       bookedTotal: booked.count ?? leadRows.filter((lead) => lead.status === "booked").length,
       clientRepliedTotal: allLeadRows.filter((lead) => extractLeadMeta(lead).clientReplied).length,
+      urgentTotal: allLeadRows.filter((lead) => (extractLeadMeta(lead).urgency ?? "").toLowerCase() === "urgent").length,
+      reactivationTotal: allLeadRows.filter(
+        (lead) => (extractLeadMeta(lead).urgency ?? "").toLowerCase() === "reactivation",
+      ).length,
+      todayTotal: allLeadRows.filter((lead) => {
+        const becameLeadAt = extractLeadMeta(lead).becameLeadAt;
+        if (!becameLeadAt) return false;
+        const ts = new Date(becameLeadAt).getTime();
+        if (Number.isNaN(ts)) return false;
+        const dayStart = new Date();
+        dayStart.setHours(0, 0, 0, 0);
+        return ts >= dayStart.getTime();
+      }).length,
     },
     pageInfo: {
       limit,
@@ -311,24 +324,34 @@ function buildLaneSummary(
   return [...byLane.values()].sort((a, b) => b.total - a.total).slice(0, 12);
 }
 
-function buildAnalytics(
-  rows: Array<{
-    treatment?: string | null;
-    status?: string | null;
-    source?: string | null;
-    updated_at?: string | null;
-    external_payload?: JsonRecord | null;
-  }>,
-): DentalDashboardData["analytics"] {
+function occurredKey(row: LeadRow): string | null {
+  const meta = extractLeadMeta(row);
+  return meta.actionedAt ?? meta.aiActionedAt ?? meta.becameLeadAt ?? row.updated_at ?? null;
+}
+
+function buildAnalytics(rows: LeadRow[]): DentalDashboardData["analytics"] {
   const byTreatment = new Map<
     TreatmentKey,
     { key: TreatmentKey; label: string; total: number; aiActioned: number; booked: number }
   >();
   const bySource = new Map<string, { source: string; total: number; clientReplied: number }>();
   const byDay = new Map<string, { label: string; total: number; aiActioned: number; clientReplied: number }>();
+  const reactivation = { contacted: 0, responded: 0, booked: 0 };
+  const attention: LeadRow[] = [];
 
   for (const row of rows) {
     const meta = extractLeadMeta(row);
+    const urgency = (meta.urgency ?? "").toLowerCase();
+    const responded = meta.aiActioned && meta.clientReplied;
+    const booked = row.status === "booked";
+
+    if (urgency === "reactivation") {
+      if (meta.aiActioned) reactivation.contacted += 1;
+      if (responded) reactivation.responded += 1;
+      if (booked) reactivation.booked += 1;
+    }
+    if (urgency === "urgent" || urgency === "reactivation") attention.push(row);
+
     const treatment = normalizeTreatment(row.treatment ?? null);
     const treatmentSummary = byTreatment.get(treatment) ?? {
       key: treatment,
@@ -363,13 +386,27 @@ function buildAnalytics(
     }
   }
 
+  const needsAttention = attention
+    .sort((a, b) => compareActivityDesc(occurredKey(a), occurredKey(b)))
+    .slice(0, 10)
+    .map((row) => ({
+      id: row.id,
+      name: row.name ?? "Unknown patient",
+      phone: row.phone,
+      treatment: normalizeTreatment(row.treatment ?? null),
+      urgency: extractLeadMeta(row).urgency,
+      occurredAt: occurredKey(row),
+    }));
+
   return {
     treatmentBreakdown: [...byTreatment.values()].sort((a, b) => b.total - a.total).slice(0, 8),
     sourceBreakdown: [...bySource.values()].sort((a, b) => b.total - a.total).slice(0, 8),
     timeline: [...byDay.entries()]
       .sort(([a], [b]) => a.localeCompare(b))
-      .slice(-7)
+      .slice(-30)
       .map(([, value]) => value),
+    reactivation,
+    needsAttention,
   };
 }
 

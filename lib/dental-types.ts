@@ -131,6 +131,9 @@ export type DentalDashboardData = {
     needsHumanTotal: number;
     bookedTotal: number;
     clientRepliedTotal?: number;
+    urgentTotal?: number;
+    reactivationTotal?: number;
+    todayTotal?: number;
   };
   pageInfo?: {
     limit: number;
@@ -167,6 +170,19 @@ export type DentalDashboardData = {
       total: number;
       aiActioned: number;
       clientReplied: number;
+    }[];
+    reactivation?: {
+      contacted: number;
+      responded: number;
+      booked: number;
+    };
+    needsAttention?: {
+      id: string;
+      name: string;
+      phone: string | null;
+      treatment: TreatmentKey;
+      urgency: string | null;
+      occurredAt: string | null;
     }[];
   };
   leads: DentalLead[];

@@ -190,6 +190,9 @@ export const mockDentalDashboardData: DentalDashboardData = {
     needsHumanTotal: mockDentalLeads.filter((lead) => lead.needsHuman).length,
     bookedTotal: mockDentalLeads.filter((lead) => lead.status === "booked").length,
     clientRepliedTotal: mockDentalLeads.filter((lead) => lead.clientReplied).length,
+    urgentTotal: 1,
+    reactivationTotal: 2,
+    todayTotal: 3,
   },
   pageInfo: {
     limit: mockDentalLeads.length,
@@ -217,6 +220,11 @@ export const mockDentalDashboardData: DentalDashboardData = {
     ],
     timeline: [
       { label: "Today", total: 3, aiActioned: 2, clientReplied: 3 },
+    ],
+    reactivation: { contacted: 2, responded: 1, booked: 1 },
+    needsAttention: [
+      { id: "mock-1", name: "Aisha Khan", phone: "+447900000001", treatment: "implants", urgency: "urgent", occurredAt: minutesAgo(30) },
+      { id: "mock-2", name: "Tom Reilly", phone: "+447900000002", treatment: "invisalign", urgency: "reactivation", occurredAt: minutesAgo(120) },
     ],
   },
   leads: mockDentalLeads,

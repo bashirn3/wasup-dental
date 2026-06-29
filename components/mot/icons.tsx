@@ -97,4 +97,7 @@ export const MIcon = {
     <MI {...p} d={<><path d="M4 7h16M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13" /></>} />
   ),
   rows: (p: P) => <MI {...p} d={<path d="M4 6h16M4 12h16M4 18h10" />} />,
+  chart: (p: P) => (
+    <MI {...p} d={<><path d="M4 4v16h16" /><path d="M8 16v-4M12.5 16V8M17 16v-6" /></>} />
+  ),
 };
