@@ -55,6 +55,7 @@ type MessageRow = {
   direction: "inbound" | "outbound";
   body: string;
   ai_generated: boolean | null;
+  external_payload?: JsonRecord | null;
   created_at: string;
 };
 
@@ -141,7 +142,7 @@ export async function getDentalDashboardData(
   const { data: messages } = leadIds.length
     ? ((await supabase
         .from("messages")
-        .select("id, lead_id, direction, body, ai_generated, created_at")
+        .select("id, lead_id, direction, body, ai_generated, external_payload, created_at")
         .in("lead_id", leadIds)
         .order("created_at", { ascending: true })
         .limit(5000)) as SupabaseResult<MessageRow[]>)
@@ -232,6 +233,19 @@ export async function getDentalDashboardData(
       needsHumanTotal: needsHuman.count ?? leadRows.filter((lead) => lead.needs_human).length,
       bookedTotal: booked.count ?? leadRows.filter((lead) => lead.status === "booked").length,
       clientRepliedTotal: allLeadRows.filter((lead) => extractLeadMeta(lead).clientReplied).length,
+      urgentTotal: allLeadRows.filter((lead) => (extractLeadMeta(lead).urgency ?? "").toLowerCase() === "urgent").length,
+      reactivationTotal: allLeadRows.filter(
+        (lead) => (extractLeadMeta(lead).urgency ?? "").toLowerCase() === "reactivation",
+      ).length,
+      todayTotal: allLeadRows.filter((lead) => {
+        const becameLeadAt = extractLeadMeta(lead).becameLeadAt;
+        if (!becameLeadAt) return false;
+        const ts = new Date(becameLeadAt).getTime();
+        if (Number.isNaN(ts)) return false;
+        const dayStart = new Date();
+        dayStart.setHours(0, 0, 0, 0);
+        return ts >= dayStart.getTime();
+      }).length,
     },
     pageInfo: {
       limit,
@@ -311,24 +325,34 @@ function buildLaneSummary(
   return [...byLane.values()].sort((a, b) => b.total - a.total).slice(0, 12);
 }
 
-function buildAnalytics(
-  rows: Array<{
-    treatment?: string | null;
-    status?: string | null;
-    source?: string | null;
-    updated_at?: string | null;
-    external_payload?: JsonRecord | null;
-  }>,
-): DentalDashboardData["analytics"] {
+function occurredKey(row: LeadRow): string | null {
+  const meta = extractLeadMeta(row);
+  return meta.actionedAt ?? meta.aiActionedAt ?? meta.becameLeadAt ?? row.updated_at ?? null;
+}
+
+function buildAnalytics(rows: LeadRow[]): DentalDashboardData["analytics"] {
   const byTreatment = new Map<
     TreatmentKey,
     { key: TreatmentKey; label: string; total: number; aiActioned: number; booked: number }
   >();
   const bySource = new Map<string, { source: string; total: number; clientReplied: number }>();
   const byDay = new Map<string, { label: string; total: number; aiActioned: number; clientReplied: number }>();
+  const reactivation = { contacted: 0, responded: 0, booked: 0 };
+  const attention: LeadRow[] = [];
 
   for (const row of rows) {
     const meta = extractLeadMeta(row);
+    const urgency = (meta.urgency ?? "").toLowerCase();
+    const responded = meta.aiActioned && meta.clientReplied;
+    const booked = row.status === "booked";
+
+    if (urgency === "reactivation") {
+      if (meta.aiActioned) reactivation.contacted += 1;
+      if (responded) reactivation.responded += 1;
+      if (booked) reactivation.booked += 1;
+    }
+    if (urgency === "urgent" || urgency === "reactivation") attention.push(row);
+
     const treatment = normalizeTreatment(row.treatment ?? null);
     const treatmentSummary = byTreatment.get(treatment) ?? {
       key: treatment,
@@ -363,14 +387,167 @@ function buildAnalytics(
     }
   }
 
+  const needsAttention = attention
+    .sort((a, b) => compareActivityDesc(occurredKey(a), occurredKey(b)))
+    .slice(0, 10)
+    .map((row) => ({
+      id: row.id,
+      name: row.name ?? "Unknown patient",
+      phone: row.phone,
+      treatment: normalizeTreatment(row.treatment ?? null),
+      urgency: extractLeadMeta(row).urgency,
+      occurredAt: occurredKey(row),
+    }));
+
   return {
     treatmentBreakdown: [...byTreatment.values()].sort((a, b) => b.total - a.total).slice(0, 8),
     sourceBreakdown: [...bySource.values()].sort((a, b) => b.total - a.total).slice(0, 8),
     timeline: [...byDay.entries()]
       .sort(([a], [b]) => a.localeCompare(b))
-      .slice(-7)
+      .slice(-30)
       .map(([, value]) => value),
+    reactivation,
+    needsAttention,
   };
+}
+
+const ANALYTICS_LEAD_SELECT =
+  "id, practice_id, name, phone, email, treatment, status, source, source_system, box_name, box_stage, needs_human, ai_confidence, last_synced_at, updated_at, external_payload";
+
+export type AnalyticsRangeKey =
+  | "today"
+  | "last_7_days"
+  | "last_30_days"
+  | "last_3_months"
+  | "all_time";
+
+const ANALYTICS_RANGE_KEYS: AnalyticsRangeKey[] = [
+  "today",
+  "last_7_days",
+  "last_30_days",
+  "last_3_months",
+  "all_time",
+];
+
+export function resolveAnalyticsRange(rangeKey: string | null): {
+  key: AnalyticsRangeKey;
+  from: string | null;
+  to: string;
+} {
+  const key = (ANALYTICS_RANGE_KEYS as string[]).includes(rangeKey ?? "")
+    ? (rangeKey as AnalyticsRangeKey)
+    : "all_time";
+  const now = new Date();
+  const from = new Date(now);
+  from.setHours(0, 0, 0, 0);
+
+  if (key === "today") {
+    // from already today start
+  } else if (key === "last_7_days") {
+    from.setDate(from.getDate() - 6);
+  } else if (key === "last_30_days") {
+    from.setDate(from.getDate() - 29);
+  } else if (key === "last_3_months") {
+    from.setMonth(from.getMonth() - 3);
+  }
+
+  return { key, from: key === "all_time" ? null : from.toISOString(), to: now.toISOString() };
+}
+
+function analyticsActivityDate(row: LeadRow): string | null {
+  const meta = extractLeadMeta(row);
+  return (
+    meta.lastUpdatedAt ??
+    meta.actionedAt ??
+    meta.aiActionedAt ??
+    meta.becameLeadAt ??
+    meta.scrapedAt ??
+    row.updated_at ??
+    null
+  );
+}
+
+function computeMetricCounts(rows: LeadRow[]): NonNullable<DentalDashboardData["metrics"]> {
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  let aiActionedTotal = 0;
+  let needsHumanTotal = 0;
+  let bookedTotal = 0;
+  let clientRepliedTotal = 0;
+  let urgentTotal = 0;
+  let reactivationTotal = 0;
+  let todayTotal = 0;
+
+  for (const row of rows) {
+    const meta = extractLeadMeta(row);
+    const urgency = (meta.urgency ?? "").toLowerCase();
+    if (meta.aiActioned) aiActionedTotal += 1;
+    if (row.needs_human) needsHumanTotal += 1;
+    if (row.status === "booked") bookedTotal += 1;
+    if (meta.clientReplied) clientRepliedTotal += 1;
+    if (urgency === "urgent") urgentTotal += 1;
+    if (urgency === "reactivation") reactivationTotal += 1;
+    if (meta.becameLeadAt) {
+      const ts = new Date(meta.becameLeadAt).getTime();
+      if (!Number.isNaN(ts) && ts >= dayStart.getTime()) todayTotal += 1;
+    }
+  }
+
+  return {
+    leadTotal: rows.length,
+    filteredLeadTotal: rows.length,
+    loadedLeadCount: rows.length,
+    aiActionedTotal,
+    needsHumanTotal,
+    bookedTotal,
+    clientRepliedTotal,
+    urgentTotal,
+    reactivationTotal,
+    todayTotal,
+  };
+}
+
+/**
+ * Date-range analytics for the Dashboard tab. Recomputes KPI counts + breakdowns
+ * for the requested period from the lead mirror. "all_time" returns everything.
+ */
+export async function getDentalAnalytics(
+  practiceId: string | null,
+  rangeKey: string | null,
+): Promise<{
+  range: ReturnType<typeof resolveAnalyticsRange>;
+  metrics: NonNullable<DentalDashboardData["metrics"]>;
+  analytics: DentalDashboardData["analytics"];
+}> {
+  const range = resolveAnalyticsRange(rangeKey);
+  const supabase = supabaseAdmin();
+  if (!supabase || !practiceId || practiceId === "mock-practice") {
+    return {
+      range,
+      metrics: mockDentalDashboardData.metrics ?? computeMetricCounts([]),
+      analytics: mockDentalDashboardData.analytics,
+    };
+  }
+
+  const { data } = (await supabase
+    .from("leads")
+    .select(ANALYTICS_LEAD_SELECT)
+    .eq("practice_id", practiceId)
+    .limit(10000)) as SupabaseResult<LeadRow[]>;
+
+  const rows = data ?? [];
+  const fromTs = range.from ? new Date(range.from).getTime() : null;
+  const toTs = new Date(range.to).getTime();
+  const filtered = fromTs
+    ? rows.filter((row) => {
+        const value = analyticsActivityDate(row);
+        if (!value) return false;
+        const ts = new Date(value).getTime();
+        return !Number.isNaN(ts) && ts >= fromTs && ts <= toTs;
+      })
+    : rows;
+
+  return { range, metrics: computeMetricCounts(filtered), analytics: buildAnalytics(filtered) };
 }
 
 function mapLead(lead: LeadRow, allMessages: MessageRow[], lastOutboundAt?: string | null): DentalLead {
@@ -419,11 +596,14 @@ function mapLead(lead: LeadRow, allMessages: MessageRow[], lastOutboundAt?: stri
 }
 
 function mapMessage(message: MessageRow): DentalMessage {
+  const payload = (message.external_payload ?? {}) as { sender?: unknown; type?: unknown };
   return {
     id: message.id,
     direction: message.direction,
     body: message.body,
     aiGenerated: Boolean(message.ai_generated),
+    sender: typeof payload.sender === "string" ? payload.sender : null,
+    kind: typeof payload.type === "string" ? payload.type : null,
     createdAt: message.created_at,
   };
 }

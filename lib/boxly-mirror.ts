@@ -253,7 +253,7 @@ async function loadLegacyLeads(client: SupabaseClient, table: string, limit: num
   const { data, error, count } = (await client
     .from(table)
     .select(LEAD_COLUMNS, { count: "exact" })
-    .order("last_updated_at", { ascending: false, nullsFirst: false })
+    .order("became_lead_at", { ascending: false, nullsFirst: false })
     .limit(limit)) as SupabaseResult<BoxlyLeadRow[]>;
 
   if (error) throw new Error(`legacy_leads_read_failed:${error.code ?? error.message}`);
@@ -296,8 +296,11 @@ function normalizeLead(row: BoxlyLeadRow, practiceId: string, now: string) {
     box_name: row.box_name ?? null,
     box_stage: row.box_stage ?? null,
     needs_human: needsHuman(row),
-    last_synced_at: row.scraped_at ?? row.last_updated_at ?? now,
-    updated_at: now,
+    last_synced_at: now,
+    // updated_at drives the Leads list ordering. Boxly's "latest" is enquiry date
+    // (became_lead_at); last_updated_at/scraped_at only track scraper activity and
+    // would float whatever was re-scraped last to the top instead of the newest lead.
+    updated_at: row.became_lead_at ?? row.last_updated_at ?? row.scraped_at ?? now,
   };
 }
 

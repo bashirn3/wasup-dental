@@ -37,6 +37,11 @@ export type DentalMessage = {
   direction: "inbound" | "outbound";
   body: string;
   aiGenerated: boolean;
+  // Original sender label from the source system (e.g. "Reception Team",
+  // a staff member's name, or the client). Mirrors Boxly's per-message sender.
+  sender?: string | null;
+  // Source message type: "outbound" | "inbound" | "system" | "form_submission" | ...
+  kind?: string | null;
   createdAt: string;
 };
 
@@ -131,6 +136,9 @@ export type DentalDashboardData = {
     needsHumanTotal: number;
     bookedTotal: number;
     clientRepliedTotal?: number;
+    urgentTotal?: number;
+    reactivationTotal?: number;
+    todayTotal?: number;
   };
   pageInfo?: {
     limit: number;
@@ -167,6 +175,19 @@ export type DentalDashboardData = {
       total: number;
       aiActioned: number;
       clientReplied: number;
+    }[];
+    reactivation?: {
+      contacted: number;
+      responded: number;
+      booked: number;
+    };
+    needsAttention?: {
+      id: string;
+      name: string;
+      phone: string | null;
+      treatment: TreatmentKey;
+      urgency: string | null;
+      occurredAt: string | null;
     }[];
   };
   leads: DentalLead[];
