@@ -15,6 +15,9 @@ type ClientEditable = {
   openingHours: string;
   closingHours: string;
   knowledge: string;
+  // Per-treatment opening WhatsApp message, keyed by treatment id (e.g. "invisalign").
+  // The n8n worker overlays these onto the hardcoded treatment config.
+  treatmentFirstMessages: Record<string, string>;
 };
 
 type WorkflowSettings = Record<string, unknown> & {
@@ -51,7 +54,17 @@ const EMPTY_CLIENT_EDITABLE: ClientEditable = {
   openingHours: "",
   closingHours: "",
   knowledge: "",
+  treatmentFirstMessages: {},
 };
+
+function treatmentMessagesFrom(raw: unknown): Record<string, string> {
+  if (!raw || typeof raw !== "object") return {};
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === "string") out[key] = value;
+  }
+  return out;
+}
 
 function clientEditableFrom(workflowSettings: WorkflowSettings | null): ClientEditable {
   const raw = workflowSettings?.clientEditable ?? {};
@@ -60,6 +73,7 @@ function clientEditableFrom(workflowSettings: WorkflowSettings | null): ClientEd
     openingHours: typeof raw.openingHours === "string" ? raw.openingHours : "",
     closingHours: typeof raw.closingHours === "string" ? raw.closingHours : "",
     knowledge: typeof raw.knowledge === "string" ? raw.knowledge : "",
+    treatmentFirstMessages: treatmentMessagesFrom(raw.treatmentFirstMessages),
   };
 }
 
@@ -136,6 +150,7 @@ export async function POST(req: NextRequest) {
     openingHours?: string;
     closingHours?: string;
     knowledge?: string;
+    treatmentFirstMessages?: Record<string, string>;
   };
 
   // Any member of the practice (admin or client) may self-edit their own agent.
@@ -173,6 +188,10 @@ export async function POST(req: NextRequest) {
     openingHours: cleanString(body.openingHours, previousEditable.openingHours),
     closingHours: cleanString(body.closingHours, previousEditable.closingHours),
     knowledge: cleanString(body.knowledge, previousEditable.knowledge),
+    treatmentFirstMessages: {
+      ...previousEditable.treatmentFirstMessages,
+      ...treatmentMessagesFrom(body.treatmentFirstMessages),
+    },
   };
   const workflowSettings: WorkflowSettings = {
     ...(latest?.workflow_settings ?? {}),

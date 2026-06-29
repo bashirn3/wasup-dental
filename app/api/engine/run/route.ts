@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
 import { resolveTenantId } from "@/lib/auth";
-import { runOutboundForTenant } from "@/lib/engine/outbound";
+import { runOutboundForTenant, outboundEngineEnabled } from "@/lib/engine/outbound";
 
 export const maxDuration = 300;
 
@@ -15,6 +15,10 @@ export const maxDuration = 300;
  * customers who were already contacted are never messaged twice.
  */
 export async function POST(req: NextRequest) {
+  if (!outboundEngineEnabled()) {
+    return NextResponse.json({ ok: true, skipped: "engine_disabled" });
+  }
+
   let clientTenantId: string | null = null;
   try {
     const body = (await req.json()) as { tenantId?: string };

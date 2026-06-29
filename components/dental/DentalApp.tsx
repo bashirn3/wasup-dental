@@ -46,6 +46,7 @@ export default function DentalApp() {
   const [openingHours, setOpeningHours] = useState("");
   const [closingHours, setClosingHours] = useState("");
   const [knowledge, setKnowledge] = useState("");
+  const [treatmentFirstMessages, setTreatmentFirstMessages] = useState<Record<string, string>>({});
   const [configVersion, setConfigVersion] = useState<number | null>(null);
   const [confirmSave, setConfirmSave] = useState(false);
   const [leadFilters, setLeadFilters] = useState<LeadFilters>(emptyFilters);
@@ -109,6 +110,11 @@ export default function DentalApp() {
         setOpeningHours(editable.openingHours ?? "");
         setClosingHours(editable.closingHours ?? "");
         setKnowledge(editable.knowledge ?? "");
+        setTreatmentFirstMessages(
+          editable.treatmentFirstMessages && typeof editable.treatmentFirstMessages === "object"
+            ? editable.treatmentFirstMessages
+            : {},
+        );
         setConfigVersion(
           typeof payload.config.versionNumber === "number" ? payload.config.versionNumber : null,
         );
@@ -182,6 +188,7 @@ export default function DentalApp() {
           openingHours,
           closingHours,
           knowledge,
+          treatmentFirstMessages,
         }),
       });
       const payload = await res.json().catch(() => ({}));
@@ -359,6 +366,7 @@ export default function DentalApp() {
               openingHours={openingHours}
               closingHours={closingHours}
               knowledge={knowledge}
+              treatmentFirstMessages={treatmentFirstMessages}
               firstMessage={firstMessage}
               prompt={prompt}
               saveState={saveState}
@@ -367,6 +375,9 @@ export default function DentalApp() {
               onOpeningHours={setOpeningHours}
               onClosingHours={setClosingHours}
               onKnowledge={setKnowledge}
+              onTreatmentFirstMessage={(id, value) =>
+                setTreatmentFirstMessages((prev) => ({ ...prev, [id]: value }))
+              }
               onFirstMessage={setFirstMessage}
               onPrompt={setPrompt}
               onRequestSave={() => setConfirmSave(true)}
@@ -1066,12 +1077,33 @@ function compareActivityDesc(a: string | null, b: string | null): number {
   return 0;
 }
 
+const TREATMENT_LABELS: Record<string, string> = {
+  invisalign: "Invisalign",
+  implants: "Dental Implants",
+  full_arch_implants: "Full Arch Implants",
+  composites: "Composite Bonding",
+  veneers: "Veneers",
+  whitening: "Teeth Whitening",
+  hygiene: "Hygiene",
+};
+
+function treatmentLabel(id: string): string {
+  return (
+    TREATMENT_LABELS[id] ??
+    id
+      .split(/[_-]/)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ")
+  );
+}
+
 function AgentPanel({
   practiceName,
   assistantName,
   openingHours,
   closingHours,
   knowledge,
+  treatmentFirstMessages,
   firstMessage,
   prompt,
   saveState,
@@ -1080,6 +1112,7 @@ function AgentPanel({
   onOpeningHours,
   onClosingHours,
   onKnowledge,
+  onTreatmentFirstMessage,
   onFirstMessage,
   onPrompt,
   onRequestSave,
@@ -1089,6 +1122,7 @@ function AgentPanel({
   openingHours: string;
   closingHours: string;
   knowledge: string;
+  treatmentFirstMessages: Record<string, string>;
   firstMessage: string;
   prompt: string;
   saveState: string;
@@ -1097,11 +1131,13 @@ function AgentPanel({
   onOpeningHours: (value: string) => void;
   onClosingHours: (value: string) => void;
   onKnowledge: (value: string) => void;
+  onTreatmentFirstMessage: (id: string, value: string) => void;
   onFirstMessage: (value: string) => void;
   onPrompt: (value: string) => void;
   onRequestSave: () => void;
 }) {
   const previewName = assistantName.trim() || "your assistant";
+  const treatmentIds = Object.keys(treatmentFirstMessages);
   return (
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
       <div className="rounded-[2rem] bg-white p-5 shadow-sm">
@@ -1168,6 +1204,30 @@ function AgentPanel({
           placeholder="e.g. Invisalign from £2,500. 2A Regent Road, LS29 9EA. Limited free parking outside."
           className="mt-2 min-h-32 w-full rounded-2xl border border-line bg-mist/50 p-4 text-sm leading-6 outline-none focus:ring-2 focus:ring-lime"
         />
+
+        {treatmentIds.length > 0 && (
+          <div className="mt-5">
+            <p className="text-sm font-semibold">First message per treatment</p>
+            <p className="mt-1 text-xs text-ink/45">
+              The opening message when a patient enquires about a specific treatment. Leave blank to
+              use the default.
+            </p>
+            <div className="mt-3 space-y-3">
+              {treatmentIds.map((id) => (
+                <div key={id}>
+                  <label className="block text-xs font-semibold text-ink/55">
+                    {treatmentLabel(id)}
+                  </label>
+                  <textarea
+                    value={treatmentFirstMessages[id] ?? ""}
+                    onChange={(event) => onTreatmentFirstMessage(id, event.target.value)}
+                    className="mt-1 min-h-20 w-full rounded-2xl border border-line bg-mist/50 p-3 text-sm leading-6 outline-none focus:ring-2 focus:ring-lime"
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         <details className="mt-5 rounded-2xl border border-line bg-mist/30 p-4">
           <summary className="cursor-pointer text-sm font-semibold">

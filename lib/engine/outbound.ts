@@ -15,6 +15,18 @@ export type TenantResult = {
 const TENANT_SELECT =
   "id, name, address, phone, website, opening_hours, mot_classes, prices, free_retest, tone, wasup_instance_id, tenant_settings(*)";
 
+/**
+ * Master kill-switch for the legacy native sending engine.
+ *
+ * In V3 the n8n worker owns all outbound sending, so this native path must stay
+ * OFF in every deployed environment unless someone deliberately opts in. Without
+ * this guard, the Vercel cron (/api/engine/outbound) could message real patients
+ * the moment the app is deployed. Default = disabled.
+ */
+export function outboundEngineEnabled(): boolean {
+  return process.env.OUTBOUND_ENGINE_ENABLED === "true";
+}
+
 /** True when an outreach run is actively claiming/sending for this garage. */
 export async function isOutreachInProgress(
   supabase: SupabaseClient,
@@ -29,6 +41,7 @@ export async function isOutreachInProgress(
 }
 
 export async function runOutboundBatch(supabase: SupabaseClient): Promise<TenantResult[]> {
+  if (!outboundEngineEnabled()) return [];
   const { data: tenants, error } = await supabase
     .from("tenants")
     .select(TENANT_SELECT)
@@ -54,6 +67,9 @@ export async function runOutboundForTenant(
   supabase: SupabaseClient,
   tenantId: string,
 ): Promise<TenantResult & { eligible: number }> {
+  if (!outboundEngineEnabled()) {
+    return { tenantId, tenant: "", sent: 0, skipped: "engine_disabled", eligible: 0 };
+  }
   const { data: tenant, error } = await supabase
     .from("tenants")
     .select(TENANT_SELECT)

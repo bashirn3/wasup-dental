@@ -1,14 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
-import { runOutboundBatch } from "@/lib/engine/outbound";
+import { runOutboundBatch, outboundEngineEnabled } from "@/lib/engine/outbound";
 
 export const maxDuration = 300;
 
 /**
  * Outbound engine tick. Trigger via Vercel cron / n8n schedule:
  *   POST /api/engine/outbound  (header: x-engine-secret)
+ *
+ * In V3 the n8n worker owns sending, so this legacy native path is disabled by
+ * default. It only runs when OUTBOUND_ENGINE_ENABLED=true, which keeps the daily
+ * Vercel cron inert (no patient messages) on a fresh deploy.
  */
 export async function POST(req: NextRequest) {
+  if (!outboundEngineEnabled()) {
+    return NextResponse.json({ ok: true, skipped: "engine_disabled" });
+  }
+
   const secret = process.env.ENGINE_SECRET;
   if (secret && req.headers.get("x-engine-secret") !== secret) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
