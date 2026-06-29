@@ -17,11 +17,12 @@ import {
   YAxis,
 } from "recharts";
 import AccountMenu from "@/components/auth/AccountMenu";
+import BoxlyConfigPanel from "@/components/dental/BoxlyConfigPanel";
 import { MIcon } from "@/components/mot/icons";
 import { defaultAgentPrompt, defaultFirstMessage, treatmentLabels } from "@/lib/dental-demo-data";
 import type { DentalDashboardData, DentalLead, DentalMessage } from "@/lib/dental-types";
 
-type TabKey = "dashboard" | "leads" | "activity" | "agent" | "connect";
+type TabKey = "dashboard" | "leads" | "activity" | "agent" | "config" | "connect";
 type LeadFilters = {
   q: string;
   status: string;
@@ -39,6 +40,7 @@ const tabs: [TabKey, string, typeof MIcon.users][] = [
   ["leads", "Leads", MIcon.users],
   ["activity", "Activity", MIcon.check],
   ["agent", "Agent", MIcon.spark],
+  ["config", "Config", MIcon.bolt],
   ["connect", "Connect", MIcon.gear],
 ];
 
@@ -428,6 +430,12 @@ export default function DentalApp() {
               onRequestSave={() => setConfirmSave(true)}
             />
           )}
+          {tab === "config" && (
+            <BoxlyConfigPanel
+              practiceId={data.practiceId ?? null}
+              practiceName={data.practice?.name ?? "your practice"}
+            />
+          )}
           {tab === "connect" && (
             <ConnectPanel data={data} provisioning={provisioning} onProvision={provisionDrafts} />
           )}
@@ -454,7 +462,7 @@ export default function DentalApp() {
       )}
 
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-black/5 bg-white/95 px-3 pb-[max(env(safe-area-inset-bottom),0.5rem)] pt-2 shadow-2xl backdrop-blur md:hidden">
-        <div className="grid grid-cols-4 gap-1">
+        <div className="grid grid-cols-6 gap-1">
           {tabs.map(([key, label, Icon]) => (
             <button
               key={key}
