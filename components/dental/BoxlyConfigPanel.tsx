@@ -49,9 +49,13 @@ function treatmentIdFromName(name: string): string {
 export default function BoxlyConfigPanel({
   practiceId,
   practiceName,
+  clientControls = false,
 }: {
   practiceId: string | null;
   practiceName: string;
+  /** Per-treatment client controls (treatment pages, clinicians, deposits) only
+   *  exist for practices wired to Dentally — currently Regent. */
+  clientControls?: boolean;
 }) {
   const [boxes, setBoxes] = useState<Box[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -128,8 +132,8 @@ export default function BoxlyConfigPanel({
         boxly("agent/config").catch(() => ({})),
         boxly("agent/prompt-notes").catch(() => ({})),
         boxly("scraper/config").catch(() => ({})),
-        boxly("client/treatment-config").catch(() => ({})),
-        boxly("client/practitioners").catch(() => ({ practitioners: [] })),
+        clientControls ? boxly("client/treatment-config").catch(() => ({})) : Promise.resolve({}),
+        clientControls ? boxly("client/practitioners").catch(() => ({ practitioners: [] })) : Promise.resolve({ practitioners: [] }),
       ]);
 
       setBoxes(Array.isArray(boxesRes) ? boxesRes : []);
@@ -159,7 +163,7 @@ export default function BoxlyConfigPanel({
       setLoadError(err instanceof Error ? err.message : "Failed to load config");
       setReady(true);
     }
-  }, [boxly, practiceId]);
+  }, [boxly, practiceId, clientControls]);
 
   useEffect(() => {
     void loadAll();
@@ -419,7 +423,8 @@ export default function BoxlyConfigPanel({
 
       {ready && !loadError && (
         <>
-          {/* Per-treatment (per-lane) client controls */}
+          {/* Per-treatment (per-lane) client controls — Regent (Dentally) only */}
+          {clientControls && (
           <Section
             title="Treatment controls"
             subtitle="Per-treatment settings the booking agent uses: page, clinicians, appointment length, and deposit."
@@ -540,6 +545,7 @@ export default function BoxlyConfigPanel({
               </button>
             </div>
           </Section>
+          )}
 
           {/* Automation */}
           <Section
