@@ -42,6 +42,12 @@ export default function DentalApp() {
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [firstMessage, setFirstMessage] = useState(defaultFirstMessage);
   const [prompt, setPrompt] = useState(defaultAgentPrompt);
+  const [assistantName, setAssistantName] = useState("");
+  const [openingHours, setOpeningHours] = useState("");
+  const [closingHours, setClosingHours] = useState("");
+  const [knowledge, setKnowledge] = useState("");
+  const [configVersion, setConfigVersion] = useState<number | null>(null);
+  const [confirmSave, setConfirmSave] = useState(false);
   const [leadFilters, setLeadFilters] = useState<LeadFilters>(emptyFilters);
   const [loadingMore, setLoadingMore] = useState(false);
   const [chatMessages, setChatMessages] = useState<DentalMessage[]>([]);
@@ -96,8 +102,16 @@ export default function DentalApp() {
       const res = await fetch("/api/agent-config", { cache: "no-store" });
       const payload = await res.json().catch(() => ({}));
       if (payload.config) {
+        const editable = payload.config.clientEditable ?? {};
         setFirstMessage(payload.config.firstMessage ?? defaultFirstMessage);
         setPrompt(payload.config.prompt ?? defaultAgentPrompt);
+        setAssistantName(editable.assistantName ?? "");
+        setOpeningHours(editable.openingHours ?? "");
+        setClosingHours(editable.closingHours ?? "");
+        setKnowledge(editable.knowledge ?? "");
+        setConfigVersion(
+          typeof payload.config.versionNumber === "number" ? payload.config.versionNumber : null,
+        );
       }
     }
     void loadConfig();
@@ -164,15 +178,21 @@ export default function DentalApp() {
           practiceId: data?.practiceId,
           firstMessage,
           prompt,
-          treatmentFocus: ["invisalign"],
-          safetyRules: [
-            "Do not diagnose.",
-            "Do not guarantee results, prices, or finance approval.",
-            "Escalate complaints, medical uncertainty, and sensitive cases.",
-          ],
+          assistantName,
+          openingHours,
+          closingHours,
+          knowledge,
         }),
       });
-      setSaveState(res.ok ? "saved" : "error");
+      const payload = await res.json().catch(() => ({}));
+      if (res.ok) {
+        if (typeof payload.config?.versionNumber === "number") {
+          setConfigVersion(payload.config.versionNumber);
+        }
+        setSaveState("saved");
+      } else {
+        setSaveState("error");
+      }
     } catch {
       setSaveState("error");
     }
@@ -334,12 +354,22 @@ export default function DentalApp() {
           )}
           {tab === "agent" && (
             <AgentPanel
+              practiceName={data.practice?.name ?? "your practice"}
+              assistantName={assistantName}
+              openingHours={openingHours}
+              closingHours={closingHours}
+              knowledge={knowledge}
               firstMessage={firstMessage}
               prompt={prompt}
               saveState={saveState}
+              configVersion={configVersion}
+              onAssistantName={setAssistantName}
+              onOpeningHours={setOpeningHours}
+              onClosingHours={setClosingHours}
+              onKnowledge={setKnowledge}
               onFirstMessage={setFirstMessage}
               onPrompt={setPrompt}
-              onSave={saveAgent}
+              onRequestSave={() => setConfirmSave(true)}
             />
           )}
           {tab === "connect" && (
@@ -354,6 +384,18 @@ export default function DentalApp() {
         loading={chatLoading}
         onClose={() => setSelectedLeadId(null)}
       />
+
+      {confirmSave && (
+        <ConfirmSaveDialog
+          practiceName={data.practice?.name ?? "your practice"}
+          busy={saveState === "saving"}
+          onCancel={() => setConfirmSave(false)}
+          onConfirm={async () => {
+            await saveAgent();
+            setConfirmSave(false);
+          }}
+        />
+      )}
 
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-black/5 bg-white/95 px-3 pb-[max(env(safe-area-inset-bottom),0.5rem)] pt-2 shadow-2xl backdrop-blur md:hidden">
         <div className="grid grid-cols-4 gap-1">
@@ -1025,44 +1067,136 @@ function compareActivityDesc(a: string | null, b: string | null): number {
 }
 
 function AgentPanel({
+  practiceName,
+  assistantName,
+  openingHours,
+  closingHours,
+  knowledge,
   firstMessage,
   prompt,
   saveState,
+  configVersion,
+  onAssistantName,
+  onOpeningHours,
+  onClosingHours,
+  onKnowledge,
   onFirstMessage,
   onPrompt,
-  onSave,
+  onRequestSave,
 }: {
+  practiceName: string;
+  assistantName: string;
+  openingHours: string;
+  closingHours: string;
+  knowledge: string;
   firstMessage: string;
   prompt: string;
   saveState: string;
+  configVersion: number | null;
+  onAssistantName: (value: string) => void;
+  onOpeningHours: (value: string) => void;
+  onClosingHours: (value: string) => void;
+  onKnowledge: (value: string) => void;
   onFirstMessage: (value: string) => void;
   onPrompt: (value: string) => void;
-  onSave: () => void;
+  onRequestSave: () => void;
 }) {
+  const previewName = assistantName.trim() || "your assistant";
   return (
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
       <div className="rounded-[2rem] bg-white p-5 shadow-sm">
-        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-ink/40">Assistant</p>
-        <h2 className="mt-2 text-2xl font-semibold tracking-tight">Messages and guidance.</h2>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-ink/40">Assistant</p>
+            <h2 className="mt-2 text-2xl font-semibold tracking-tight">Edit your agent.</h2>
+            <p className="mt-2 max-w-xl text-sm leading-6 text-ink/50">
+              Change how your assistant introduces itself, your hours, and what it knows. Saving
+              creates a new approved version for {practiceName}.
+            </p>
+          </div>
+          {configVersion ? (
+            <span className="rounded-full bg-mist px-3 py-1 text-xs font-semibold text-ink/55">
+              v{configVersion}
+            </span>
+          ) : null}
+        </div>
+
+        <label className="mt-5 block text-sm font-semibold">Assistant name</label>
+        <p className="mt-1 text-xs text-ink/45">The name patients see, e.g. &ldquo;Emily&rdquo;.</p>
+        <input
+          value={assistantName}
+          onChange={(event) => onAssistantName(event.target.value)}
+          placeholder="Emily"
+          className="mt-2 w-full rounded-2xl border border-line bg-mist/50 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-lime"
+        />
+
+        <div className="mt-5 grid gap-3 sm:grid-cols-2">
+          <div>
+            <label className="block text-sm font-semibold">Opening hours</label>
+            <input
+              value={openingHours}
+              onChange={(event) => onOpeningHours(event.target.value)}
+              placeholder="Mon-Fri 9:00"
+              className="mt-2 w-full rounded-2xl border border-line bg-mist/50 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-lime"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-semibold">Closing hours</label>
+            <input
+              value={closingHours}
+              onChange={(event) => onClosingHours(event.target.value)}
+              placeholder="Mon-Fri 17:30"
+              className="mt-2 w-full rounded-2xl border border-line bg-mist/50 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-lime"
+            />
+          </div>
+        </div>
+
         <label className="mt-5 block text-sm font-semibold">First WhatsApp message</label>
         <textarea
           value={firstMessage}
           onChange={(event) => onFirstMessage(event.target.value)}
-          className="mt-2 min-h-28 w-full rounded-2xl border border-line bg-mist/50 p-4 text-sm outline-none focus:ring-2 focus:ring-lime"
+          className="mt-2 min-h-24 w-full rounded-2xl border border-line bg-mist/50 p-4 text-sm outline-none focus:ring-2 focus:ring-lime"
         />
-        <label className="mt-5 block text-sm font-semibold">Assistant guidance</label>
+
+        <label className="mt-5 block text-sm font-semibold">Practice knowledge</label>
+        <p className="mt-1 text-xs text-ink/45">
+          Treatments, prices, address, parking, FAQs the assistant can mention.
+        </p>
         <textarea
-          value={prompt}
-          onChange={(event) => onPrompt(event.target.value)}
-          className="mt-2 min-h-72 w-full rounded-2xl border border-line bg-mist/50 p-4 font-mono text-xs leading-6 outline-none focus:ring-2 focus:ring-lime"
+          value={knowledge}
+          onChange={(event) => onKnowledge(event.target.value)}
+          placeholder="e.g. Invisalign from £2,500. 2A Regent Road, LS29 9EA. Limited free parking outside."
+          className="mt-2 min-h-32 w-full rounded-2xl border border-line bg-mist/50 p-4 text-sm leading-6 outline-none focus:ring-2 focus:ring-lime"
         />
-        <button
-          onClick={onSave}
-          className="mt-4 rounded-full bg-pine px-6 py-3 text-sm font-semibold text-lime transition hover:brightness-110"
-        >
-          {saveState === "saving" ? "Saving..." : saveState === "saved" ? "Saved" : "Save changes"}
-        </button>
+
+        <details className="mt-5 rounded-2xl border border-line bg-mist/30 p-4">
+          <summary className="cursor-pointer text-sm font-semibold">
+            Advanced: assistant guidance (master prompt)
+          </summary>
+          <textarea
+            value={prompt}
+            onChange={(event) => onPrompt(event.target.value)}
+            className="mt-3 min-h-72 w-full rounded-2xl border border-line bg-white p-4 font-mono text-xs leading-6 outline-none focus:ring-2 focus:ring-lime"
+          />
+        </details>
+
+        <div className="mt-5 flex flex-wrap items-center gap-3">
+          <button
+            onClick={onRequestSave}
+            disabled={saveState === "saving"}
+            className="rounded-full bg-pine px-6 py-3 text-sm font-semibold text-lime transition hover:brightness-110 disabled:opacity-50"
+          >
+            {saveState === "saving" ? "Saving..." : "Save & approve"}
+          </button>
+          {saveState === "saved" && (
+            <span className="text-sm font-semibold text-pine">Saved. New version is live-ready.</span>
+          )}
+          {saveState === "error" && (
+            <span className="text-sm font-semibold text-red-600">Could not save. Try again.</span>
+          )}
+        </div>
       </div>
+
       <div className="rounded-[2rem] bg-white p-5 shadow-sm">
         <h3 className="font-semibold">Test preview</h3>
         <div className="mt-4 rounded-[1.5rem] bg-[#eee9e1] p-4">
@@ -1073,8 +1207,61 @@ function AgentPanel({
             Is this treatment suitable for me?
           </div>
           <div className="mt-3 rounded-2xl rounded-br-sm bg-[#d9fdd3] px-4 py-3 text-sm shadow-sm">
-            Thanks for asking. I can explain the consultation process and check a suitable appointment, but the dentist will confirm clinical suitability.
+            Thanks for asking. {previewName} can explain the consultation process and check a suitable
+            appointment, but the dentist will confirm clinical suitability.
           </div>
+        </div>
+        <p className="mt-4 text-xs leading-5 text-ink/45">
+          This is a static preview. Your saved changes apply to new WhatsApp conversations once the
+          automation is connected to this config.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmSaveDialog({
+  practiceName,
+  busy,
+  onConfirm,
+  onCancel,
+}: {
+  practiceName: string;
+  busy: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+      <button
+        type="button"
+        aria-label="Cancel"
+        onClick={onCancel}
+        className="absolute inset-0 bg-pine-deep/40 backdrop-blur-[2px]"
+      />
+      <div className="relative w-full max-w-md rounded-[2rem] bg-white p-6 shadow-2xl">
+        <h3 className="text-lg font-semibold">Approve agent changes?</h3>
+        <p className="mt-2 text-sm leading-6 text-ink/60">
+          This saves a new approved version of the agent config for {practiceName}. Once the
+          automation reads it, changes apply to new conversations. Existing chats are not affected.
+        </p>
+        <div className="mt-6 flex justify-end gap-3">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={busy}
+            className="rounded-full bg-mist px-5 py-2.5 text-sm font-semibold text-ink/60 transition hover:text-ink disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={busy}
+            className="rounded-full bg-pine px-5 py-2.5 text-sm font-semibold text-lime transition hover:brightness-110 disabled:opacity-50"
+          >
+            {busy ? "Saving..." : "Approve & save"}
+          </button>
         </div>
       </div>
     </div>
