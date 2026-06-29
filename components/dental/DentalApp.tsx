@@ -65,7 +65,16 @@ export default function DentalApp() {
   const [configVersion, setConfigVersion] = useState<number | null>(null);
   const [confirmSave, setConfirmSave] = useState(false);
   const [leadFilters, setLeadFilters] = useState<LeadFilters>(emptyFilters);
-  const [loadingMore, setLoadingMore] = useState(false);
+  const [page, setPage] = useState(1);
+  const [savedSnapshot, setSavedSnapshot] = useState({
+    firstMessage: defaultFirstMessage,
+    prompt: defaultAgentPrompt,
+    assistantName: "",
+    openingHours: "",
+    closingHours: "",
+    knowledge: "",
+    treatmentFirstMessages: {} as Record<string, string>,
+  });
   const [chatMessages, setChatMessages] = useState<DentalMessage[]>([]);
   const [chatLoading, setChatLoading] = useState(false);
   const [activePracticeId, setActivePracticeId] = useState<string | null>(() => {
@@ -73,9 +82,8 @@ export default function DentalApp() {
     return window.localStorage.getItem(ACTIVE_WORKSPACE_KEY);
   });
 
-  const load = useCallback(async (options: { offset?: number; append?: boolean } = {}) => {
-    const offset = options.offset ?? 0;
-    if (options.append) setLoadingMore(true);
+  const load = useCallback(async () => {
+    const offset = (page - 1) * PAGE_SIZE;
     try {
       const params = new URLSearchParams({
         limit: String(PAGE_SIZE),
@@ -89,23 +97,15 @@ export default function DentalApp() {
 
       const res = await fetch(`/api/dashboard-data?${params.toString()}`, { cache: "no-store" });
       const payload = await res.json();
-      setData((prev) =>
-        options.append && prev
-          ? {
-              ...payload,
-              leads: [...prev.leads, ...(payload.leads ?? [])],
-            }
-          : payload,
-      );
+      setData(payload);
       if (payload.practiceId && payload.practiceId !== activePracticeId) {
         setActivePracticeId(payload.practiceId);
         window.localStorage.setItem(ACTIVE_WORKSPACE_KEY, payload.practiceId);
       }
     } finally {
       setLoading(false);
-      setLoadingMore(false);
     }
-  }, [activePracticeId, leadFilters]);
+  }, [activePracticeId, leadFilters, page]);
 
   useEffect(() => {
     void load();
@@ -119,17 +119,27 @@ export default function DentalApp() {
       const payload = await res.json().catch(() => ({}));
       if (payload.config) {
         const editable = payload.config.clientEditable ?? {};
-        setFirstMessage(payload.config.firstMessage ?? defaultFirstMessage);
-        setPrompt(payload.config.prompt ?? defaultAgentPrompt);
-        setAssistantName(editable.assistantName ?? "");
-        setOpeningHours(editable.openingHours ?? "");
-        setClosingHours(editable.closingHours ?? "");
-        setKnowledge(editable.knowledge ?? "");
-        setTreatmentFirstMessages(
+        const loadedTreatmentMessages =
           editable.treatmentFirstMessages && typeof editable.treatmentFirstMessages === "object"
-            ? editable.treatmentFirstMessages
-            : {},
-        );
+            ? (editable.treatmentFirstMessages as Record<string, string>)
+            : {};
+        const loaded = {
+          firstMessage: payload.config.firstMessage ?? defaultFirstMessage,
+          prompt: payload.config.prompt ?? defaultAgentPrompt,
+          assistantName: editable.assistantName ?? "",
+          openingHours: editable.openingHours ?? "",
+          closingHours: editable.closingHours ?? "",
+          knowledge: editable.knowledge ?? "",
+          treatmentFirstMessages: loadedTreatmentMessages,
+        };
+        setFirstMessage(loaded.firstMessage);
+        setPrompt(loaded.prompt);
+        setAssistantName(loaded.assistantName);
+        setOpeningHours(loaded.openingHours);
+        setClosingHours(loaded.closingHours);
+        setKnowledge(loaded.knowledge);
+        setTreatmentFirstMessages(loadedTreatmentMessages);
+        setSavedSnapshot(loaded);
         setConfigVersion(
           typeof payload.config.versionNumber === "number" ? payload.config.versionNumber : null,
         );
@@ -146,6 +156,26 @@ export default function DentalApp() {
     [data?.activityLeads, leads, selectedLeadId],
   );
   const stats = useMemo(() => buildStats(leads, data?.metrics), [leads, data?.metrics]);
+  const agentDirty = useMemo(
+    () =>
+      firstMessage !== savedSnapshot.firstMessage ||
+      prompt !== savedSnapshot.prompt ||
+      assistantName !== savedSnapshot.assistantName ||
+      openingHours !== savedSnapshot.openingHours ||
+      closingHours !== savedSnapshot.closingHours ||
+      knowledge !== savedSnapshot.knowledge ||
+      JSON.stringify(treatmentFirstMessages) !== JSON.stringify(savedSnapshot.treatmentFirstMessages),
+    [
+      firstMessage,
+      prompt,
+      assistantName,
+      openingHours,
+      closingHours,
+      knowledge,
+      treatmentFirstMessages,
+      savedSnapshot,
+    ],
+  );
 
   useEffect(() => {
     if (!selectedLead) {
@@ -211,6 +241,15 @@ export default function DentalApp() {
         if (typeof payload.config?.versionNumber === "number") {
           setConfigVersion(payload.config.versionNumber);
         }
+        setSavedSnapshot({
+          firstMessage,
+          prompt,
+          assistantName,
+          openingHours,
+          closingHours,
+          knowledge,
+          treatmentFirstMessages,
+        });
         setSaveState("saved");
       } else {
         setSaveState("error");
@@ -281,6 +320,7 @@ export default function DentalApp() {
                     setActivePracticeId(next);
                     setSelectedLeadId(null);
                     setLeadFilters(emptyFilters);
+                    setPage(1);
                     window.localStorage.setItem(ACTIVE_WORKSPACE_KEY, next);
                     setLoading(true);
                   }}
@@ -310,13 +350,6 @@ export default function DentalApp() {
             </div>
           </div>
 
-          <div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-5">
-            <Stat label="Total leads" value={data.metrics?.leadTotal ?? stats.total} />
-            <Stat label="Contacted" value={stats.aiActioned} />
-            <Stat label="Needs staff" value={stats.needsHuman} />
-            <Stat label="Booked" value={stats.booked} />
-            <Stat label="Replies" value={data.metrics?.clientRepliedTotal ?? leads.filter((lead) => lead.clientReplied).length} />
-          </div>
         </header>
 
         <div className="mt-4 hidden rounded-full bg-white p-1 shadow-sm md:flex">
@@ -334,19 +367,6 @@ export default function DentalApp() {
           ))}
         </div>
 
-        {(tab === "leads" || tab === "activity") && data.laneSummary?.length ? (
-          <LaneOverview
-            lanes={data.laneSummary}
-            activeLane={leadFilters.box}
-            onSelectLane={(lane) => {
-              setTab("leads");
-              setSelectedLeadId(null);
-              setLeadFilters({ ...emptyFilters, box: lane });
-              setLoading(true);
-            }}
-          />
-        ) : null}
-
         <section className="mt-4 flex-1">
           {tab === "dashboard" && (
             <AnalyticsPanel data={data} stats={stats} practiceId={data.practiceId ?? null} />
@@ -359,14 +379,19 @@ export default function DentalApp() {
               filteredTotal={data.metrics?.filteredLeadTotal ?? data.metrics?.leadTotal ?? leads.length}
               facets={data.facets}
               filters={leadFilters}
-              hasMore={Boolean(data.pageInfo?.hasMore)}
-              loadingMore={loadingMore}
+              page={page}
+              pageSize={PAGE_SIZE}
+              onPageChange={(next) => {
+                setSelectedLeadId(null);
+                setPage(next);
+                setLoading(true);
+              }}
               onFiltersChange={(filters) => {
                 setSelectedLeadId(null);
                 setLeadFilters(filters);
+                setPage(1);
                 setLoading(true);
               }}
-              onLoadMore={() => void load({ offset: leads.length, append: true })}
               onSelect={setSelectedLeadId}
             />
           )}
@@ -380,6 +405,7 @@ export default function DentalApp() {
           {tab === "agent" && (
             <AgentPanel
               practiceName={data.practice?.name ?? "your practice"}
+              practiceId={data.practiceId ?? null}
               assistantName={assistantName}
               openingHours={openingHours}
               closingHours={closingHours}
@@ -389,6 +415,7 @@ export default function DentalApp() {
               prompt={prompt}
               saveState={saveState}
               configVersion={configVersion}
+              dirty={agentDirty}
               onAssistantName={setAssistantName}
               onOpeningHours={setOpeningHours}
               onClosingHours={setClosingHours}
@@ -446,71 +473,6 @@ export default function DentalApp() {
   );
 }
 
-function Stat({ label, value, text = false }: { label: string; value: number | string; text?: boolean }) {
-  return (
-    <div className="rounded-2xl bg-white/10 px-4 py-3">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-paper/45">{label}</p>
-      <p className={`${text ? "text-xl" : "text-3xl"} mt-1 font-semibold tracking-tight text-lime`}>
-        {typeof value === "number" ? value.toLocaleString() : value}
-      </p>
-    </div>
-  );
-}
-
-function LaneOverview({
-  lanes,
-  activeLane,
-  onSelectLane,
-}: {
-  lanes: NonNullable<DentalDashboardData["laneSummary"]>;
-  activeLane: string;
-  onSelectLane: (lane: string) => void;
-}) {
-  return (
-    <section className="mt-4 rounded-[2rem] bg-white p-4 shadow-sm">
-      <div className="flex items-center justify-between gap-3 px-1">
-        <div>
-          <h2 className="text-sm font-semibold">Lane overview</h2>
-          <p className="text-xs text-ink/45">Tap a lane to filter leads by treatment or stage.</p>
-        </div>
-        {activeLane && <LanePill label={`Filtered: ${activeLane}`} />}
-      </div>
-      <div className="mt-4 flex gap-3 overflow-x-auto pb-1">
-        {lanes.map((lane) => (
-          <button
-            key={lane.name}
-            type="button"
-            onClick={() => onSelectLane(lane.name)}
-            className={`min-w-[210px] rounded-2xl border px-4 py-3 text-left transition ${
-              activeLane === lane.name
-                ? "border-pine bg-pine text-paper"
-                : "border-line bg-mist/50 hover:border-pine/20 hover:bg-white"
-            }`}
-          >
-            <p className="truncate text-sm font-semibold">{lane.name}</p>
-            <p
-              className={`mt-2 text-3xl font-semibold tracking-tight ${
-                activeLane === lane.name ? "text-lime" : "text-ink"
-              }`}
-            >
-              {lane.total.toLocaleString()}
-            </p>
-            <div
-              className={`mt-2 grid grid-cols-3 gap-2 text-[11px] ${
-                activeLane === lane.name ? "text-paper/60" : "text-ink/45"
-              }`}
-            >
-              <span>{lane.aiActioned.toLocaleString()} AI</span>
-              <span>{lane.needsHuman.toLocaleString()} staff</span>
-              <span>{lane.booked.toLocaleString()} booked</span>
-            </div>
-          </button>
-        ))}
-      </div>
-    </section>
-  );
-}
-
 function LeadsPanel({
   leads,
   selectedLead,
@@ -518,10 +480,10 @@ function LeadsPanel({
   filteredTotal,
   facets,
   filters,
-  hasMore,
-  loadingMore,
+  page,
+  pageSize,
+  onPageChange,
   onFiltersChange,
-  onLoadMore,
   onSelect,
 }: {
   leads: DentalLead[];
@@ -530,10 +492,10 @@ function LeadsPanel({
   filteredTotal: number;
   facets?: DentalDashboardData["facets"];
   filters: LeadFilters;
-  hasMore: boolean;
-  loadingMore: boolean;
+  page: number;
+  pageSize: number;
+  onPageChange: (page: number) => void;
   onFiltersChange: (filters: LeadFilters) => void;
-  onLoadMore: () => void;
   onSelect: (id: string) => void;
 }) {
   const filtered = filteredTotal !== totalLeads;
@@ -548,7 +510,6 @@ function LeadsPanel({
               Search every patient and lead in this workspace.
             </p>
             <p className="mt-1 text-xs text-ink/35">
-              Showing {leads.length.toLocaleString()} of{" "}
               {(filtered ? filteredTotal : totalLeads).toLocaleString()} leads
               {filtered ? ` filtered from ${totalLeads.toLocaleString()} total.` : "."}
             </p>
@@ -572,18 +533,21 @@ function LeadsPanel({
           />
           <FilterSelect
             label="Status"
+            placeholder="All Status"
             value={filters.status}
             options={facets?.statuses ?? []}
             onChange={(value) => onFiltersChange({ ...filters, status: value })}
           />
           <FilterSelect
-            label="Lane"
+            label="Boxes"
+            placeholder="All Boxes"
             value={filters.box}
             options={facets?.boxes ?? []}
             onChange={(value) => onFiltersChange({ ...filters, box: value })}
           />
           <FilterSelect
-            label="Stage"
+            label="Stages"
+            placeholder="All Stages"
             value={filters.stage}
             options={facets?.stages ?? []}
             onChange={(value) => onFiltersChange({ ...filters, stage: value })}
@@ -635,18 +599,64 @@ function LeadsPanel({
           </div>
         )}
       </div>
-      {hasMore && (
-        <div className="border-t border-line p-4">
-          <button
-            type="button"
-            onClick={onLoadMore}
-            disabled={loadingMore}
-            className="w-full rounded-full bg-pine px-5 py-3 text-sm font-semibold text-lime transition hover:brightness-110 disabled:opacity-50"
-          >
-            {loadingMore ? "Loading more..." : "Load more leads"}
-          </button>
-        </div>
+      {(filtered ? filteredTotal : totalLeads) > pageSize && (
+        <Pagination
+          page={page}
+          pageSize={pageSize}
+          total={filtered ? filteredTotal : totalLeads}
+          onPageChange={onPageChange}
+        />
       )}
+    </div>
+  );
+}
+
+function Pagination({
+  page,
+  pageSize,
+  total,
+  onPageChange,
+}: {
+  page: number;
+  pageSize: number;
+  total: number;
+  onPageChange: (page: number) => void;
+}) {
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const safePage = Math.min(Math.max(page, 1), totalPages);
+  const start = total ? (safePage - 1) * pageSize + 1 : 0;
+  const end = Math.min(safePage * pageSize, total);
+
+  return (
+    <div className="flex flex-col gap-3 border-t border-line px-5 py-4 text-sm text-ink/55 sm:flex-row sm:items-center sm:justify-between">
+      <p>
+        Showing <span className="font-semibold text-ink">{start.toLocaleString()}</span>–
+        <span className="font-semibold text-ink">{end.toLocaleString()}</span> of{" "}
+        <span className="font-semibold text-ink">{total.toLocaleString()}</span>
+      </p>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => onPageChange(safePage - 1)}
+          disabled={safePage <= 1}
+          className="inline-flex h-9 items-center gap-1 rounded-full border border-line bg-white px-3 text-xs font-semibold text-pine transition hover:border-pine disabled:cursor-not-allowed disabled:text-ink/35 disabled:opacity-60"
+        >
+          <MIcon.back size={14} />
+          Prev
+        </button>
+        <span className="min-w-[64px] text-center text-xs font-semibold tabular-nums text-ink">
+          {safePage} / {totalPages}
+        </span>
+        <button
+          type="button"
+          onClick={() => onPageChange(safePage + 1)}
+          disabled={safePage >= totalPages}
+          className="inline-flex h-9 items-center gap-1 rounded-full border border-line bg-white px-3 text-xs font-semibold text-pine transition hover:border-pine disabled:cursor-not-allowed disabled:text-ink/35 disabled:opacity-60"
+        >
+          Next
+          <MIcon.chev size={14} />
+        </button>
+      </div>
     </div>
   );
 }
@@ -656,11 +666,13 @@ function FilterSelect({
   value,
   options,
   onChange,
+  placeholder,
 }: {
   label: string;
   value: string;
   options: string[];
   onChange: (value: string) => void;
+  placeholder?: string;
 }) {
   return (
     <label className="block">
@@ -670,7 +682,7 @@ function FilterSelect({
         onChange={(event) => onChange(event.target.value)}
         className="w-full rounded-2xl border border-line bg-mist/50 px-4 py-3 text-sm outline-none transition focus:border-pine/30 focus:bg-white"
       >
-        <option value="">{label}</option>
+        <option value="">{placeholder ?? `All ${label}`}</option>
         {options.map((option) => (
           <option key={option} value={option}>
             {humanize(option)}
@@ -754,23 +766,47 @@ function LeadDrawer({
               {loading && !sortedMessages.length ? (
                 <p className="py-8 text-center text-sm text-ink/45">Loading conversation...</p>
               ) : sortedMessages.length ? (
-                sortedMessages.map((message) => (
-                  <div
-                    key={message.id}
-                    className={`max-w-[86%] rounded-2xl px-4 py-3 text-sm shadow-sm ${
-                      message.direction === "outbound"
-                        ? "ml-auto rounded-br-sm bg-[#d9fdd3]"
-                        : "rounded-bl-sm bg-white"
-                    }`}
-                  >
-                    <p className="whitespace-pre-wrap">{message.body}</p>
-                    <p className="mt-1 text-[10px] font-semibold uppercase tracking-wider text-ink/35">
-                      {message.aiGenerated ? "Assistant" : message.direction === "inbound" ? "Patient" : "Team"}
-                      {" · "}
-                      {formatDateTime(message.createdAt)}
-                    </p>
-                  </div>
-                ))
+                sortedMessages.map((message) => {
+                  const isOutbound = message.direction === "outbound";
+                  const isSystem = message.kind === "system";
+
+                  if (isSystem) {
+                    return (
+                      <div key={message.id} className="mx-auto max-w-[90%] rounded-2xl bg-black/[0.05] px-3 py-2 text-center">
+                        <p className="text-[10px] font-semibold uppercase tracking-wider text-ink/40">
+                          {message.sender ?? "System"} · {formatDateTime(message.createdAt)}
+                        </p>
+                        <p className="mt-0.5 whitespace-pre-wrap text-xs text-ink/55">{message.body}</p>
+                      </div>
+                    );
+                  }
+
+                  const roleLabel = isOutbound
+                    ? message.sender ?? (message.aiGenerated ? "Assistant" : "Team")
+                    : message.sender ?? "Client";
+
+                  return (
+                    <div
+                      key={message.id}
+                      className={`max-w-[86%] rounded-2xl px-4 py-3 text-sm shadow-sm ${
+                        isOutbound ? "ml-auto rounded-br-sm bg-[#d9fdd3]" : "rounded-bl-sm bg-white"
+                      }`}
+                    >
+                      <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider">
+                        <span className={isOutbound ? "text-emerald-700" : "text-sky-700"}>{roleLabel}</span>
+                        {isOutbound && message.aiGenerated && (
+                          <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[9px] leading-none text-emerald-700">
+                            AI
+                          </span>
+                        )}
+                      </div>
+                      <p className="whitespace-pre-wrap">{message.body}</p>
+                      <p className="mt-1 text-[10px] font-semibold uppercase tracking-wider text-ink/35">
+                        {formatDateTime(message.createdAt)}
+                      </p>
+                    </div>
+                  );
+                })
               ) : (
                 <p className="py-8 text-center text-sm text-ink/45">No conversation imported for this lead yet.</p>
               )}
@@ -831,6 +867,10 @@ function ActivityPanel({
   onSelectLead: (leadId: string) => void;
 }) {
   const [filters, setFilters] = useState<ActivityFilters>(emptyActivityFilters);
+  const [page, setPage] = useState(1);
+  useEffect(() => {
+    setPage(1);
+  }, [filters]);
   const metrics = data.metrics;
   const total = Math.max(metrics?.leadTotal ?? data.leads.length, 1);
   const sourceLeads = data.activityLeads?.length ? data.activityLeads : data.leads;
@@ -840,10 +880,9 @@ function ActivityPanel({
       const search = filters.q.trim().toLowerCase();
       const statusMatches =
         !filters.status ||
-        (filters.status === "contacted" && (lead.aiActioned || lead.actioned)) ||
-        (filters.status === "patient_replied" && lead.clientReplied) ||
-        (filters.status === "needs_staff" && lead.needsHuman) ||
-        (filters.status === "booked" && lead.status === "booked");
+        (filters.status === "AI responded" && (lead.aiActioned || lead.actioned)) ||
+        (filters.status === "Client responded" && lead.clientReplied) ||
+        (filters.status === "Booked" && lead.status === "booked");
       const laneMatches = !filters.box || lead.boxName === filters.box;
       const searchMatches =
         !search ||
@@ -854,29 +893,32 @@ function ActivityPanel({
       return statusMatches && laneMatches && searchMatches;
     })
     .sort((a, b) => compareActivityDesc(activityTimestamp(a), activityTimestamp(b)));
-  const needsAttention = activityLeads.filter((lead) => lead.needsHuman || lead.clientReplied).slice(0, 6);
-  const statusOptions = ["contacted", "patient_replied", "needs_staff", "booked"];
+  const ACTIVITY_PAGE_SIZE = 20;
+  const pagedActivityLeads = activityLeads.slice(
+    (page - 1) * ACTIVITY_PAGE_SIZE,
+    page * ACTIVITY_PAGE_SIZE,
+  );
+  const statusOptions = ["AI responded", "Client responded", "Booked"];
   const hasFilters = filters.q || filters.status || filters.box;
+  const totalActioned =
+    metrics?.aiActionedTotal ?? sourceLeads.filter((lead) => lead.aiActioned || lead.actioned).length;
+  const clientResponded =
+    metrics?.clientRepliedTotal ?? sourceLeads.filter((lead) => lead.clientReplied).length;
   const engagementCards = [
     {
-      label: "Contacted",
-      value: metrics?.aiActionedTotal ?? sourceLeads.filter((lead) => lead.aiActioned || lead.actioned).length,
-      detail: `${Math.round(((metrics?.aiActionedTotal ?? 0) / total) * 100)}% of leads`,
+      label: "Total Actioned",
+      value: totalActioned,
+      detail: `${Math.round((totalActioned / total) * 100)}% of leads`,
     },
     {
-      label: "Patient replied",
-      value: metrics?.clientRepliedTotal ?? sourceLeads.filter((lead) => lead.clientReplied).length,
+      label: "AI Responded",
+      value: totalActioned,
+      detail: "Agent first messages sent",
+    },
+    {
+      label: "Client Responded",
+      value: clientResponded,
       detail: "Replies to review",
-    },
-    {
-      label: "Needs staff",
-      value: metrics?.needsHumanTotal ?? 0,
-      detail: "Requires follow-up",
-    },
-    {
-      label: "Booked",
-      value: metrics?.bookedTotal ?? 0,
-      detail: `${Math.round(((metrics?.bookedTotal ?? 0) / total) * 100)}% booked`,
     },
   ];
 
@@ -886,9 +928,9 @@ function ActivityPanel({
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-ink/40">Activity</p>
-            <h2 className="mt-2 text-2xl font-semibold tracking-tight">Follow-up that needs attention.</h2>
+            <h2 className="mt-2 text-2xl font-semibold tracking-tight">Conversation activity.</h2>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-ink/50">
-              Track contacted leads, patient replies, bookings, and conversations.
+              Track actioned leads, agent responses, client replies, and bookings.
             </p>
           </div>
           {hasFilters && (
@@ -901,7 +943,7 @@ function ActivityPanel({
             </button>
           )}
         </div>
-        <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {engagementCards.map((card) => (
             <div key={card.label} className="rounded-2xl bg-mist/70 px-4 py-4">
               <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-ink/40">{card.label}</p>
@@ -912,7 +954,7 @@ function ActivityPanel({
         </div>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
+      <div>
         <div className="overflow-hidden rounded-[2rem] bg-white shadow-sm">
           <div className="border-b border-line px-5 py-4">
             <div className="flex flex-wrap items-end justify-between gap-3">
@@ -935,12 +977,14 @@ function ActivityPanel({
               />
               <FilterSelect
                 label="Status"
+                placeholder="All Status"
                 value={filters.status}
                 options={statusOptions}
                 onChange={(value) => setFilters((current) => ({ ...current, status: value }))}
               />
               <FilterSelect
-                label="Lane"
+                label="Boxes"
+                placeholder="All Boxes"
                 value={filters.box}
                 options={data.facets?.boxes ?? []}
                 onChange={(value) => setFilters((current) => ({ ...current, box: value }))}
@@ -948,7 +992,7 @@ function ActivityPanel({
             </div>
           </div>
           <div className="divide-y divide-line">
-            {activityLeads.length ? activityLeads.map((lead) => (
+            {pagedActivityLeads.length ? pagedActivityLeads.map((lead) => (
               <ActivityLeadRow
                 key={lead.id}
                 lead={lead}
@@ -962,8 +1006,15 @@ function ActivityPanel({
               </div>
             )}
           </div>
+          {activityLeads.length > ACTIVITY_PAGE_SIZE && (
+            <Pagination
+              page={page}
+              pageSize={ACTIVITY_PAGE_SIZE}
+              total={activityLeads.length}
+              onPageChange={setPage}
+            />
+          )}
         </div>
-        <ActivitySidePanel leads={needsAttention} lanes={data.laneSummary ?? []} onSelectLead={onSelectLead} />
       </div>
     </div>
   );
@@ -1023,61 +1074,6 @@ function ActivityLeadRow({
         </span>
       </div>
     </button>
-  );
-}
-
-function ActivitySidePanel({
-  leads,
-  lanes,
-  onSelectLead,
-}: {
-  leads: DentalLead[];
-  lanes: NonNullable<DentalDashboardData["laneSummary"]>;
-  onSelectLead: (leadId: string) => void;
-}) {
-  return (
-    <div className="space-y-4">
-      <div className="rounded-[2rem] bg-white p-5 shadow-sm">
-        <h3 className="font-semibold">Needs attention</h3>
-        <div className="mt-4 divide-y divide-line">
-          {leads.length ? leads.map((lead) => (
-            <button
-              key={lead.id}
-              type="button"
-              onClick={() => onSelectLead(lead.id)}
-              className="block w-full py-3 text-left text-sm transition hover:text-pine"
-            >
-              <div className="flex items-center justify-between gap-3">
-                <p className="truncate font-semibold">{lead.name}</p>
-                <span className="text-xs text-ink/35">{formatShortDate(lead.lastUpdatedAt ?? lead.updatedAt)}</span>
-              </div>
-              <p className="mt-1 line-clamp-2 text-ink/50">{lead.leadSummary ?? lead.lastMessage}</p>
-            </button>
-          )) : (
-            <p className="rounded-2xl bg-mist px-4 py-5 text-sm text-ink/50">No patient replies need attention.</p>
-          )}
-        </div>
-      </div>
-
-      <div className="rounded-[2rem] bg-white p-5 shadow-sm">
-        <h3 className="font-semibold">Top lanes</h3>
-        <div className="mt-4 space-y-2">
-          {lanes.slice(0, 6).map((lane) => (
-            <div key={lane.name} className="rounded-2xl bg-mist px-4 py-3 text-sm">
-              <div className="flex items-center justify-between gap-3">
-                <span className="truncate font-semibold">{lane.name}</span>
-                <span className="tabular-nums text-ink/50">{lane.total.toLocaleString()}</span>
-              </div>
-              <div className="mt-2 grid grid-cols-3 gap-2 text-[11px] text-ink/40">
-                <span>{lane.aiActioned.toLocaleString()} contacted</span>
-                <span>{lane.needsHuman.toLocaleString()} staff</span>
-                <span>{lane.booked.toLocaleString()} booked</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
   );
 }
 
@@ -1454,8 +1450,43 @@ function treatmentLabel(id: string): string {
   );
 }
 
+type SimMessage = { id: string; role: "assistant" | "patient"; content: string };
+
+// The production Regent prompt replies as {"response":"..."} JSON; unwrap it so the
+// simulator shows plain WhatsApp text instead of raw JSON.
+function extractReplyText(raw: unknown): string {
+  const text = String(raw ?? "").trim();
+  if (!text) return "";
+  const tryParse = (value: string): Record<string, unknown> | null => {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  };
+  let obj = tryParse(text);
+  if (!obj) {
+    const match = text.match(/\{[\s\S]*\}/);
+    if (match) obj = tryParse(match[0]);
+  }
+  if (obj) {
+    const value = obj.response ?? obj.message ?? obj.reply;
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return text;
+}
+type ScanKnowledge = {
+  summary?: string;
+  benefits?: string[];
+  pricing?: string;
+  finance?: string;
+  confidence?: number;
+};
+
 function AgentPanel({
   practiceName,
+  practiceId,
   assistantName,
   openingHours,
   closingHours,
@@ -1465,6 +1496,7 @@ function AgentPanel({
   prompt,
   saveState,
   configVersion,
+  dirty,
   onAssistantName,
   onOpeningHours,
   onClosingHours,
@@ -1475,6 +1507,7 @@ function AgentPanel({
   onRequestSave,
 }: {
   practiceName: string;
+  practiceId: string | null;
   assistantName: string;
   openingHours: string;
   closingHours: string;
@@ -1484,6 +1517,7 @@ function AgentPanel({
   prompt: string;
   saveState: string;
   configVersion: number | null;
+  dirty: boolean;
   onAssistantName: (value: string) => void;
   onOpeningHours: (value: string) => void;
   onClosingHours: (value: string) => void;
@@ -1493,146 +1527,536 @@ function AgentPanel({
   onPrompt: (value: string) => void;
   onRequestSave: () => void;
 }) {
-  const previewName = assistantName.trim() || "your assistant";
+  const displayName = assistantName.trim() || "your assistant";
   const treatmentIds = Object.keys(treatmentFirstMessages);
+  const treatmentOptions = treatmentIds.length ? treatmentIds : Object.keys(TREATMENT_LABELS);
+  const promptWordCount = prompt.trim().split(/\s+/).filter(Boolean).length;
+
+  const [firstMessageOpen, setFirstMessageOpen] = useState(false);
+  const [promptOpen, setPromptOpen] = useState(false);
+  const [firstMessageLocked, setFirstMessageLocked] = useState(false);
+  const [instructionPatch, setInstructionPatch] = useState("");
+  const [selectedTreatment, setSelectedTreatment] = useState(treatmentOptions[0] ?? "invisalign");
+  const [websiteUrl, setWebsiteUrl] = useState("");
+  const [scan, setScan] = useState<{
+    status: "idle" | "scanning" | "done" | "error";
+    message?: string;
+    result?: ScanKnowledge;
+  }>({ status: "idle" });
+
+  async function scanWebsite() {
+    if (!websiteUrl.trim()) return;
+    setScan({ status: "scanning" });
+    try {
+      const res = await fetch("/api/knowledge/scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ practiceId, websiteUrl, treatment: selectedTreatment }),
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setScan({ status: "error", message: payload.error ?? "Website scan failed." });
+        return;
+      }
+      setScan({
+        status: "done",
+        result: payload.knowledge as ScanKnowledge,
+        message: payload.persisted ? "Saved to knowledge packets." : "Scanned. Seed Supabase to persist.",
+      });
+    } catch {
+      setScan({ status: "error", message: "Scan endpoint is not reachable." });
+    }
+  }
+
+  const [simMessages, setSimMessages] = useState<SimMessage[]>([
+    { id: "sim-opening", role: "assistant", content: firstMessage },
+  ]);
+  const [draft, setDraft] = useState("");
+  const [simSeq, setSimSeq] = useState(0);
+  const [simBusy, setSimBusy] = useState(false);
+
+  function buildSystemPrompt(): string {
+    const lines: string[] = [];
+    if (prompt.trim()) lines.push(prompt.trim());
+    if (assistantName.trim()) {
+      lines.push(
+        `Your name is ${assistantName.trim()}. Always introduce yourself as ${assistantName.trim()} from ${practiceName}.`,
+      );
+    }
+    if (openingHours.trim() || closingHours.trim()) {
+      lines.push(
+        `Practice hours: ${[openingHours.trim(), closingHours.trim()].filter(Boolean).join(" — ")}.`,
+      );
+    }
+    if (knowledge.trim()) lines.push(`Practice knowledge you may use:\n${knowledge.trim()}`);
+    const opener = treatmentFirstMessages[selectedTreatment]?.trim();
+    if (opener) lines.push(`For ${treatmentLabel(selectedTreatment)} enquiries your opening style is: "${opener}"`);
+    lines.push(
+      `You are in a private test simulator for ${practiceName}. Reply as the WhatsApp assistant would: warm, concise, one question at a time. Never diagnose, quote unconfirmed prices, or guarantee outcomes.`,
+    );
+    return lines.join("\n\n");
+  }
+
+  async function sendSim() {
+    const clean = draft.trim();
+    if (!clean || simBusy) return;
+    const seq = simSeq + 1;
+    setSimSeq(seq);
+    const history: SimMessage[] = [...simMessages, { id: `patient-${seq}`, role: "patient", content: clean }];
+    setSimMessages(history);
+    setDraft("");
+    setSimBusy(true);
+    try {
+      const res = await fetch("/api/agent/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          systemPrompt: buildSystemPrompt(),
+          messages: history.map((m) => ({
+            role: m.role === "patient" ? "user" : "assistant",
+            content: m.content,
+          })),
+        }),
+      });
+      const payload = await res.json().catch(() => ({}));
+      const reply =
+        res.ok && payload.reply
+          ? extractReplyText(payload.reply)
+          : "⚠️ Could not generate a reply. Check the AI configuration.";
+      setSimMessages((current) => [...current, { id: `assistant-${seq}`, role: "assistant", content: reply }]);
+    } catch {
+      setSimMessages((current) => [
+        ...current,
+        { id: `assistant-${seq}`, role: "assistant", content: "⚠️ Could not reach the agent service." },
+      ]);
+    } finally {
+      setSimBusy(false);
+    }
+  }
+
+  function restartSim() {
+    setSimSeq(0);
+    setSimBusy(false);
+    setSimMessages([{ id: "sim-opening", role: "assistant", content: firstMessage }]);
+    setDraft("");
+  }
+
+  function injectInstructions() {
+    const clean = instructionPatch.trim();
+    if (!clean) return;
+    onPrompt(`${prompt.trim()}\n\nAdditional dashboard instruction:\n${clean}`);
+    setInstructionPatch("");
+    setPromptOpen(true);
+  }
+
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
-      <div className="rounded-[2rem] bg-white p-5 shadow-sm">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-ink/40">Assistant</p>
-            <h2 className="mt-2 text-2xl font-semibold tracking-tight">Edit your agent.</h2>
-            <p className="mt-2 max-w-xl text-sm leading-6 text-ink/50">
-              Change how your assistant introduces itself, your hours, and what it knows. Saving
-              creates a new approved version for {practiceName}.
-            </p>
-          </div>
-          {configVersion ? (
-            <span className="rounded-full bg-mist px-3 py-1 text-xs font-semibold text-ink/55">
-              v{configVersion}
-            </span>
-          ) : null}
-        </div>
-
-        <label className="mt-5 block text-sm font-semibold">Assistant name</label>
-        <p className="mt-1 text-xs text-ink/45">The name patients see, e.g. &ldquo;Emily&rdquo;.</p>
-        <input
-          value={assistantName}
-          onChange={(event) => onAssistantName(event.target.value)}
-          placeholder="Emily"
-          className="mt-2 w-full rounded-2xl border border-line bg-mist/50 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-lime"
-        />
-
-        <div className="mt-5 grid gap-3 sm:grid-cols-2">
-          <div>
-            <label className="block text-sm font-semibold">Opening hours</label>
-            <input
-              value={openingHours}
-              onChange={(event) => onOpeningHours(event.target.value)}
-              placeholder="Mon-Fri 9:00"
-              className="mt-2 w-full rounded-2xl border border-line bg-mist/50 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-lime"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-semibold">Closing hours</label>
-            <input
-              value={closingHours}
-              onChange={(event) => onClosingHours(event.target.value)}
-              placeholder="Mon-Fri 17:30"
-              className="mt-2 w-full rounded-2xl border border-line bg-mist/50 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-lime"
-            />
-          </div>
-        </div>
-
-        <label className="mt-5 block text-sm font-semibold">First WhatsApp message</label>
-        <textarea
-          value={firstMessage}
-          onChange={(event) => onFirstMessage(event.target.value)}
-          className="mt-2 min-h-24 w-full rounded-2xl border border-line bg-mist/50 p-4 text-sm outline-none focus:ring-2 focus:ring-lime"
-        />
-
-        <label className="mt-5 block text-sm font-semibold">Practice knowledge</label>
-        <p className="mt-1 text-xs text-ink/45">
-          Treatments, prices, address, parking, FAQs the assistant can mention.
-        </p>
-        <textarea
-          value={knowledge}
-          onChange={(event) => onKnowledge(event.target.value)}
-          placeholder="e.g. Invisalign from £2,500. 2A Regent Road, LS29 9EA. Limited free parking outside."
-          className="mt-2 min-h-32 w-full rounded-2xl border border-line bg-mist/50 p-4 text-sm leading-6 outline-none focus:ring-2 focus:ring-lime"
-        />
-
-        {treatmentIds.length > 0 && (
-          <div className="mt-5">
-            <p className="text-sm font-semibold">First message per treatment</p>
-            <p className="mt-1 text-xs text-ink/45">
-              The opening message when a patient enquires about a specific treatment. Leave blank to
-              use the default.
-            </p>
-            <div className="mt-3 space-y-3">
-              {treatmentIds.map((id) => (
-                <div key={id}>
-                  <label className="block text-xs font-semibold text-ink/55">
-                    {treatmentLabel(id)}
-                  </label>
-                  <textarea
-                    value={treatmentFirstMessages[id] ?? ""}
-                    onChange={(event) => onTreatmentFirstMessage(id, event.target.value)}
-                    className="mt-1 min-h-20 w-full rounded-2xl border border-line bg-mist/50 p-3 text-sm leading-6 outline-none focus:ring-2 focus:ring-lime"
-                  />
-                </div>
-              ))}
+    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_390px]">
+      <div className="space-y-4">
+        <div className="rounded-[2rem] bg-white p-5 shadow-sm">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-ink/40">Assistant</p>
+              <h2 className="mt-2 text-2xl font-semibold tracking-tight">Edit your agent.</h2>
+              <p className="mt-2 max-w-xl text-sm leading-6 text-ink/50">
+                Change how your assistant introduces itself, your hours, and what it knows, then test it
+                in the WhatsApp simulator. Saving creates a new approved version for {practiceName}.
+              </p>
             </div>
           </div>
-        )}
+          <div className="mt-4 flex flex-wrap gap-2 text-xs font-semibold">
+            <span className="rounded-full bg-mist px-3 py-1 text-ink/55">{practiceName}</span>
+            <span className="rounded-full bg-mist px-3 py-1 text-ink/55">{displayName}</span>
+            {configVersion ? (
+              <span className="rounded-full bg-mist px-3 py-1 text-ink/55">v{configVersion}</span>
+            ) : null}
+            <span
+              className={`rounded-full px-3 py-1 ${
+                dirty ? "bg-amber-100 text-amber-700" : "bg-lime text-pine-deep"
+              }`}
+            >
+              {dirty ? "Unsaved draft" : "Approved"}
+            </span>
+          </div>
+        </div>
 
-        <details className="mt-5 rounded-2xl border border-line bg-mist/30 p-4">
-          <summary className="cursor-pointer text-sm font-semibold">
-            Advanced: assistant guidance (master prompt)
-          </summary>
+        <div className="rounded-[2rem] bg-white p-5 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-ink/40">Identity</p>
+          <label className="mt-3 block text-sm font-semibold">Assistant name</label>
+          <p className="mt-1 text-xs text-ink/45">The name patients see, e.g. &ldquo;Emily&rdquo;.</p>
+          <input
+            value={assistantName}
+            onChange={(event) => onAssistantName(event.target.value)}
+            placeholder="Emily"
+            className="mt-2 w-full rounded-2xl border border-line bg-mist/50 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-lime"
+          />
+
+          <div className="mt-5 grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className="block text-sm font-semibold">Opening hours</label>
+              <input
+                value={openingHours}
+                onChange={(event) => onOpeningHours(event.target.value)}
+                placeholder="Mon-Fri 9:00"
+                className="mt-2 w-full rounded-2xl border border-line bg-mist/50 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-lime"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-semibold">Closing hours</label>
+              <input
+                value={closingHours}
+                onChange={(event) => onClosingHours(event.target.value)}
+                placeholder="Mon-Fri 17:30"
+                className="mt-2 w-full rounded-2xl border border-line bg-mist/50 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-lime"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-[2rem] bg-white p-4 shadow-sm">
+          <p className="px-1 text-xs font-semibold uppercase tracking-[0.18em] text-ink/40">Treatment</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {treatmentOptions.map((id) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setSelectedTreatment(id)}
+                className={`rounded-full border px-4 py-2 text-sm font-semibold transition ${
+                  selectedTreatment === id
+                    ? "border-pine bg-pine text-lime"
+                    : "border-line bg-white text-ink/55 hover:border-pine hover:text-pine"
+                }`}
+              >
+                {treatmentLabel(id)}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <CollapsibleCard
+          eyebrow="First WhatsApp message"
+          title="First message"
+          body={
+            firstMessageOpen
+              ? "Edit the opener patients see at the start of the conversation."
+              : "The opener patients see first. Open to edit or lock it for testing."
+          }
+          open={firstMessageOpen}
+          onToggle={() => setFirstMessageOpen((current) => !current)}
+        >
+          <textarea
+            value={firstMessage}
+            onChange={(event) => onFirstMessage(event.target.value)}
+            disabled={firstMessageLocked}
+            className={`min-h-28 w-full rounded-2xl border border-line bg-mist/50 p-4 text-sm leading-6 outline-none focus:ring-2 focus:ring-lime ${
+              firstMessageLocked ? "cursor-not-allowed opacity-70" : ""
+            }`}
+          />
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+            <p className="text-xs text-ink/45">
+              {firstMessage.length} characters · {firstMessageLocked ? "locked" : "editable"}
+            </p>
+            <button
+              type="button"
+              onClick={() => setFirstMessageLocked((current) => !current)}
+              className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-xs font-semibold transition ${
+                firstMessageLocked
+                  ? "border-pine bg-pine/5 text-pine"
+                  : "border-line bg-white text-ink/60 hover:border-pine hover:text-pine"
+              }`}
+            >
+              {firstMessageLocked ? "Unlock first message" : "Lock first message"}
+            </button>
+          </div>
+        </CollapsibleCard>
+
+        <div className="rounded-[2rem] bg-white p-5 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-ink/40">Per treatment</p>
+          <h3 className="mt-2 text-lg font-semibold">First message · {treatmentLabel(selectedTreatment)}</h3>
+          <p className="mt-1 text-xs text-ink/45">
+            The opening message when a patient enquires about {treatmentLabel(selectedTreatment)}. Use the
+            chips above to switch treatments. Leave blank to use the default first message.
+          </p>
+          <textarea
+            value={treatmentFirstMessages[selectedTreatment] ?? ""}
+            onChange={(event) => onTreatmentFirstMessage(selectedTreatment, event.target.value)}
+            placeholder={`Hi 👋 Thanks for asking about ${treatmentLabel(selectedTreatment).toLowerCase()}…`}
+            className="mt-3 min-h-24 w-full rounded-2xl border border-line bg-mist/50 p-3 text-sm leading-6 outline-none focus:ring-2 focus:ring-lime"
+          />
+        </div>
+
+        <div className="rounded-[2rem] bg-white p-5 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-ink/40">Facts</p>
+          <h3 className="mt-2 text-lg font-semibold">Practice knowledge</h3>
+          <p className="mt-1 text-xs text-ink/45">
+            Treatments, prices, address, parking, FAQs the assistant can mention.
+          </p>
+          <textarea
+            value={knowledge}
+            onChange={(event) => onKnowledge(event.target.value)}
+            placeholder="e.g. Invisalign from £2,500. 2A Regent Road, LS29 9EA. Limited free parking outside."
+            className="mt-3 min-h-32 w-full rounded-2xl border border-line bg-mist/50 p-4 text-sm leading-6 outline-none focus:ring-2 focus:ring-lime"
+          />
+        </div>
+
+        <div className="rounded-[2rem] bg-white p-5 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-ink/40">Scan</p>
+          <h3 className="mt-2 text-lg font-semibold">Scraped knowledge</h3>
+          <p className="mt-1 text-xs text-ink/45">
+            Pull {treatmentLabel(selectedTreatment)} facts from your website. Review, then add them to the
+            assistant&rsquo;s knowledge.
+          </p>
+          <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto]">
+            <input
+              value={websiteUrl}
+              onChange={(event) => {
+                setWebsiteUrl(event.target.value);
+                if (scan.status !== "idle") setScan({ status: "idle" });
+              }}
+              placeholder="https://your-practice.co.uk/invisalign"
+              className="rounded-2xl border border-line bg-mist/50 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-lime"
+            />
+            <button
+              type="button"
+              onClick={scanWebsite}
+              disabled={scan.status === "scanning" || !websiteUrl.trim()}
+              className="inline-flex items-center justify-center gap-2 rounded-full bg-pine px-5 py-3 text-sm font-semibold text-lime transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <MIcon.refresh size={16} />
+              {scan.status === "scanning" ? "Scanning..." : scan.result ? "Rescan" : "Scan"}
+            </button>
+          </div>
+          {scan.message && (
+            <p className={`mt-3 text-xs ${scan.status === "error" ? "text-red-600" : "text-ink/55"}`}>
+              {scan.message}
+            </p>
+          )}
+          {scan.result && (
+            <div className="mt-4 space-y-3 rounded-2xl border border-line bg-mist/40 p-4 text-sm">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-ink/45">
+                  General information
+                </p>
+                {typeof scan.result.confidence === "number" && (
+                  <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-ink/55">
+                    {Math.round(scan.result.confidence * 100)}% confidence
+                  </span>
+                )}
+              </div>
+              <p className="leading-6 text-ink/70">{scan.result.summary}</p>
+              {scan.result.benefits?.length ? (
+                <ul className="space-y-1.5">
+                  {scan.result.benefits.map((item, index) => (
+                    <li key={index} className="flex gap-2 text-ink/65">
+                      <MIcon.check size={14} />
+                      <span>{item}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-2xl bg-white p-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-ink/45">Pricing</p>
+                  <p className="mt-1 leading-6 text-ink/65">{scan.result.pricing}</p>
+                </div>
+                <div className="rounded-2xl bg-white p-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-ink/45">Finance</p>
+                  <p className="mt-1 leading-6 text-ink/65">{scan.result.finance}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const summary = scan.result?.summary?.trim();
+                  if (!summary) return;
+                  onKnowledge(knowledge.trim() ? `${knowledge.trim()}\n\n${summary}` : summary);
+                }}
+                className="inline-flex items-center gap-2 rounded-full border border-pine px-4 py-2 text-xs font-semibold text-pine transition hover:bg-pine/5"
+              >
+                <MIcon.plus size={14} />
+                Add summary to knowledge
+              </button>
+            </div>
+          )}
+        </div>
+
+        <div className="rounded-[2rem] bg-white p-5 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-ink/40">Agent instructions</p>
+          <h3 className="mt-2 text-lg font-semibold">Instruction patch</h3>
+          <p className="mt-1 text-xs leading-6 text-ink/45">
+            Add a small behaviour change and merge it into the master prompt. This affects tone and
+            knowledge only, not tools.
+          </p>
+          <textarea
+            value={instructionPatch}
+            onChange={(event) => setInstructionPatch(event.target.value)}
+            placeholder="Example: be more concise, ask one follow-up question, and escalate clinical suitability questions."
+            className="mt-3 min-h-24 w-full rounded-2xl border border-line bg-mist/50 p-4 text-sm leading-6 outline-none focus:ring-2 focus:ring-lime"
+          />
+          <div className="mt-3 flex justify-end">
+            <button
+              type="button"
+              onClick={injectInstructions}
+              disabled={!instructionPatch.trim()}
+              className="inline-flex items-center gap-2 rounded-full bg-pine px-4 py-2 text-sm font-semibold text-lime transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <MIcon.spark size={16} />
+              Inject instructions
+            </button>
+          </div>
+        </div>
+
+        <CollapsibleCard
+          eyebrow="Advanced editor"
+          title="Master prompt"
+          body={promptOpen ? "Edit the full master prompt directly." : "Open only when editing the full system prompt."}
+          open={promptOpen}
+          onToggle={() => setPromptOpen((current) => !current)}
+        >
           <textarea
             value={prompt}
             onChange={(event) => onPrompt(event.target.value)}
-            className="mt-3 min-h-72 w-full rounded-2xl border border-line bg-white p-4 font-mono text-xs leading-6 outline-none focus:ring-2 focus:ring-lime"
+            className="min-h-[26rem] w-full rounded-2xl border border-line bg-white p-4 font-mono text-xs leading-6 outline-none focus:ring-2 focus:ring-lime"
           />
-        </details>
+          <p className="mt-2 text-xs text-ink/45">{promptWordCount} words</p>
+        </CollapsibleCard>
 
-        <div className="mt-5 flex flex-wrap items-center gap-3">
-          <button
-            onClick={onRequestSave}
-            disabled={saveState === "saving"}
-            className="rounded-full bg-pine px-6 py-3 text-sm font-semibold text-lime transition hover:brightness-110 disabled:opacity-50"
-          >
-            {saveState === "saving" ? "Saving..." : "Save & approve"}
-          </button>
-          {saveState === "saved" && (
-            <span className="text-sm font-semibold text-pine">Saved. New version is live-ready.</span>
-          )}
-          {saveState === "error" && (
-            <span className="text-sm font-semibold text-red-600">Could not save. Try again.</span>
-          )}
+        <div className="rounded-[2rem] bg-white p-5 shadow-sm">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="font-semibold">{dirty ? "Draft changes ready" : "Current version approved"}</p>
+              {saveState === "saved" && (
+                <p className="mt-1 text-sm font-semibold text-pine">Saved. New version is live-ready.</p>
+              )}
+              {saveState === "error" && (
+                <p className="mt-1 text-sm font-semibold text-red-600">Could not save. Try again.</p>
+              )}
+              {saveState !== "saved" && saveState !== "error" && (
+                <p className="mt-1 text-sm text-ink/45">
+                  Changes apply to new conversations once approved. Existing chats are unaffected.
+                </p>
+              )}
+            </div>
+            <button
+              onClick={onRequestSave}
+              disabled={saveState === "saving" || !dirty}
+              className="inline-flex items-center gap-2 rounded-full bg-pine px-6 py-3 text-sm font-semibold text-lime transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <MIcon.check size={16} />
+              {saveState === "saving" ? "Saving..." : dirty ? "Save & approve" : "Approved"}
+            </button>
+          </div>
         </div>
       </div>
 
-      <div className="rounded-[2rem] bg-white p-5 shadow-sm">
-        <h3 className="font-semibold">Test preview</h3>
-        <div className="mt-4 rounded-[1.5rem] bg-[#eee9e1] p-4">
-          <div className="rounded-2xl rounded-br-sm bg-[#d9fdd3] px-4 py-3 text-sm shadow-sm">
-            {firstMessage}
+      <div className="lg:sticky lg:top-6 lg:self-start">
+        <div className="rounded-[2rem] bg-white p-4 shadow-sm sm:p-5">
+          <div className="mb-4 flex items-center justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-ink/40">Simulator</p>
+              <h3 className="mt-1 text-lg font-semibold">WhatsApp playground</h3>
+            </div>
+            <button
+              type="button"
+              onClick={restartSim}
+              className="inline-flex items-center gap-1.5 rounded-full border border-line bg-white px-3 py-1.5 text-xs font-semibold text-ink/55 transition hover:border-pine hover:text-pine"
+            >
+              <MIcon.refresh size={14} />
+              Restart
+            </button>
           </div>
-          <div className="mt-3 rounded-2xl rounded-bl-sm bg-white px-4 py-3 text-sm shadow-sm">
-            Is this treatment suitable for me?
-          </div>
-          <div className="mt-3 rounded-2xl rounded-br-sm bg-[#d9fdd3] px-4 py-3 text-sm shadow-sm">
-            Thanks for asking. {previewName} can explain the consultation process and check a suitable
-            appointment, but the dentist will confirm clinical suitability.
+          <p className="mb-4 rounded-2xl bg-mist px-4 py-3 text-xs leading-5 text-ink/55">
+            Test only. Messages here are not sent to WhatsApp — use this to check tone and safety.
+          </p>
+          <div className="flex h-[460px] flex-col overflow-hidden rounded-[1.5rem] border border-line bg-[#eee9e1]">
+            <div className="flex items-center gap-3 bg-pine px-4 py-3 text-paper">
+              <span className="grid size-9 place-items-center rounded-full bg-white/15 text-sm font-bold text-lime">
+                {practiceName.charAt(0)}
+              </span>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold">{practiceName}</p>
+                <p className="text-xs text-paper/60">{displayName} · online</p>
+              </div>
+            </div>
+            <div className="flex-1 space-y-2 overflow-y-auto px-3.5 py-4">
+              {simMessages.map((message) => (
+                <div
+                  key={message.id}
+                  className={`flex ${message.role === "assistant" ? "justify-start" : "justify-end"}`}
+                >
+                  <div
+                    className={`max-w-[82%] whitespace-pre-wrap px-3 py-2 text-[15px] leading-[1.42] text-[#111b21] shadow-sm ${
+                      message.role === "assistant"
+                        ? "rounded-[10px] rounded-tl-[3px] bg-white"
+                        : "rounded-[10px] rounded-tr-[3px] bg-[#d9fdd3]"
+                    }`}
+                  >
+                    {message.content}
+                  </div>
+                </div>
+              ))}
+              {simBusy && (
+                <div className="flex justify-start">
+                  <div className="rounded-[10px] rounded-tl-[3px] bg-white px-3 py-2 text-[13px] text-[#667781] shadow-sm">
+                    {displayName} is typing…
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="flex gap-2 bg-[#eee9e1] px-3 py-2.5">
+              <input
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void sendSim();
+                }}
+                placeholder="Type a patient test message..."
+                className="h-11 min-w-0 flex-1 rounded-full border-0 bg-white px-[18px] text-[15px] text-[#111b21] shadow-sm outline-none placeholder:text-[#667781]"
+              />
+              <button
+                type="button"
+                onClick={() => void sendSim()}
+                disabled={simBusy || !draft.trim()}
+                className="grid size-11 place-items-center rounded-full bg-pine text-lime transition hover:brightness-110 disabled:opacity-50"
+                aria-label="Send test message"
+              >
+                <MIcon.send size={18} />
+              </button>
+            </div>
           </div>
         </div>
-        <p className="mt-4 text-xs leading-5 text-ink/45">
-          This is a static preview. Your saved changes apply to new WhatsApp conversations once the
-          automation is connected to this config.
-        </p>
       </div>
+    </div>
+  );
+}
+
+function CollapsibleCard({
+  eyebrow,
+  title,
+  body,
+  open,
+  onToggle,
+  children,
+}: {
+  eyebrow: string;
+  title: string;
+  body: string;
+  open: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className="overflow-hidden rounded-[2rem] bg-white p-5 shadow-sm">
+      <button type="button" onClick={onToggle} className="flex w-full items-start justify-between gap-4 text-left" aria-expanded={open}>
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-ink/40">{eyebrow}</p>
+          <h3 className="mt-2 text-lg font-semibold">{title}</h3>
+          <p className="mt-1 text-sm leading-6 text-ink/45">{body}</p>
+        </div>
+        <span className="shrink-0 rounded-full bg-mist px-3 py-1 text-xs font-semibold text-ink/55">
+          {open ? "Hide" : "Edit"}
+        </span>
+      </button>
+      {open ? <div className="mt-4">{children}</div> : null}
     </div>
   );
 }

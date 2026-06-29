@@ -3,6 +3,10 @@
     {
       "path": "/api/engine/outbound",
       "schedule": "0 10 * * *"
+    },
+    {
+      "path": "/api/import/boxly/scheduled",
+      "schedule": "* * * * *"
     }
   ]
 }

@@ -3,7 +3,8 @@ import { mirrorBoxlyPractice } from "@/lib/boxly-mirror";
 import { supabaseAdmin } from "@/lib/supabase";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+// Both practices (+ conversation dedup) sync in one cron invocation; give it room.
+export const maxDuration = 300;
 
 type IntegrationRow = {
   id: string;
@@ -52,7 +53,10 @@ export async function GET(req: NextRequest) {
     try {
       const result = await mirrorBoxlyPractice(integration.practice_id, {
         integrationId: integration.id,
-        limit: 1000,
+        // Runs every minute: sync the newest enquiries (by became_lead_at) so each
+        // run stays fast and never overlaps. New leads always sort to the top of
+        // this window; deeper backfills use scripts/sync-boxly.mjs.
+        limit: 300,
         includeConversations: true,
       });
       results.push({ ok: true, integrationId: integration.id, result });

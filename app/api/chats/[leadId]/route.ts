@@ -28,20 +28,25 @@ export async function GET(
 
   const { data } = await supabase
     .from("messages")
-    .select("id, direction, body, ai_generated, created_at")
+    .select("id, direction, body, ai_generated, external_payload, created_at")
     .eq("practice_id", membership.practiceId)
     .eq("lead_id", leadId)
     .order("created_at", { ascending: true })
     .limit(500);
 
   return NextResponse.json({
-    messages: (data ?? []).map((message) => ({
-      id: message.id,
-      direction: message.direction,
-      body: message.body,
-      aiGenerated: Boolean(message.ai_generated),
-      createdAt: message.created_at,
-    })),
+    messages: (data ?? []).map((message) => {
+      const payload = (message.external_payload ?? {}) as { sender?: unknown; type?: unknown };
+      return {
+        id: message.id,
+        direction: message.direction,
+        body: message.body,
+        aiGenerated: Boolean(message.ai_generated),
+        sender: typeof payload.sender === "string" ? payload.sender : null,
+        kind: typeof payload.type === "string" ? payload.type : null,
+        createdAt: message.created_at,
+      };
+    }),
   });
 }
 

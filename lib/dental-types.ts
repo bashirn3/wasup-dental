@@ -37,6 +37,11 @@ export type DentalMessage = {
   direction: "inbound" | "outbound";
   body: string;
   aiGenerated: boolean;
+  // Original sender label from the source system (e.g. "Reception Team",
+  // a staff member's name, or the client). Mirrors Boxly's per-message sender.
+  sender?: string | null;
+  // Source message type: "outbound" | "inbound" | "system" | "form_submission" | ...
+  kind?: string | null;
   createdAt: string;
 };
 

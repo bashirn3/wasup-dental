@@ -55,6 +55,7 @@ type MessageRow = {
   direction: "inbound" | "outbound";
   body: string;
   ai_generated: boolean | null;
+  external_payload?: JsonRecord | null;
   created_at: string;
 };
 
@@ -141,7 +142,7 @@ export async function getDentalDashboardData(
   const { data: messages } = leadIds.length
     ? ((await supabase
         .from("messages")
-        .select("id, lead_id, direction, body, ai_generated, created_at")
+        .select("id, lead_id, direction, body, ai_generated, external_payload, created_at")
         .in("lead_id", leadIds)
         .order("created_at", { ascending: true })
         .limit(5000)) as SupabaseResult<MessageRow[]>)
@@ -595,11 +596,14 @@ function mapLead(lead: LeadRow, allMessages: MessageRow[], lastOutboundAt?: stri
 }
 
 function mapMessage(message: MessageRow): DentalMessage {
+  const payload = (message.external_payload ?? {}) as { sender?: unknown; type?: unknown };
   return {
     id: message.id,
     direction: message.direction,
     body: message.body,
     aiGenerated: Boolean(message.ai_generated),
+    sender: typeof payload.sender === "string" ? payload.sender : null,
+    kind: typeof payload.type === "string" ? payload.type : null,
     createdAt: message.created_at,
   };
 }
