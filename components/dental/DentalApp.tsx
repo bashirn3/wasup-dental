@@ -434,6 +434,7 @@ export default function DentalApp() {
             <BoxlyConfigPanel
               practiceId={data.practiceId ?? null}
               practiceName={data.practice?.name ?? "your practice"}
+              clientControls={(data.practice?.name ?? "").toLowerCase().includes("regent")}
             />
           )}
           {tab === "connect" && (

@@ -30,6 +30,11 @@ const ALLOWLIST: Record<string, ReadonlySet<string>> = {
   "scraper/reactivation-stages": new Set(["GET", "PUT"]),
   "scraper/config": new Set(["GET", "PUT"]),
   "scraper/status": new Set(["GET"]),
+  // client (per-treatment / per-lane) controls
+  "client/treatment-config": new Set(["GET", "PUT"]),
+  "client/practitioners": new Set(["GET"]),
+  "client/reactivation-options": new Set(["GET"]),
+  "client/reactivation-campaigns": new Set(["GET", "POST"]),
   "leads/boxes": new Set(["GET"]),
   "leads/stages": new Set(["GET"]),
   "cron": new Set(["GET", "PUT"]),
