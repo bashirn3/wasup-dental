@@ -15,8 +15,36 @@ type Window = { start: number; end: number };
 type AutoFilter = { box?: string; stage?: string; windows?: Window[]; max_per_run?: number };
 type ReactivationFilter = { box?: string; stage?: string };
 type ScraperConfig = Record<string, { value: number; default: number }>;
+type Practitioner = { id: string; name: string };
+type Treatment = {
+  id: string;
+  name: string;
+  treatment_page_url: string;
+  practitioner_ids: string[];
+  appointment_length_minutes: number;
+  deposit_required: boolean;
+  deposit_amount: number;
+};
 
 type Banner = { ok: boolean; msg: string } | null;
+
+const CORE_TREATMENT_IDS = new Set([
+  "invisalign",
+  "composite-bonding",
+  "implants",
+  "full-arch-implants",
+  "hygiene",
+]);
+
+function treatmentIdFromName(name: string): string {
+  return (
+    String(name || "treatment")
+      .toLowerCase()
+      .replace(/&/g, "and")
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "") || "treatment"
+  );
+}
 
 export default function BoxlyConfigPanel({
   practiceId,
@@ -59,6 +87,12 @@ export default function BoxlyConfigPanel({
   const [scraperEdits, setScraperEdits] = useState<Record<string, number>>({});
   const [scraperBanner, setScraperBanner] = useState<Banner>(null);
 
+  // Per-treatment (per-lane) client controls
+  const [treatments, setTreatments] = useState<Treatment[]>([]);
+  const [lengthOptions, setLengthOptions] = useState<number[]>([15, 20, 30, 45, 60]);
+  const [practitioners, setPractitioners] = useState<Practitioner[]>([]);
+  const [treatmentBanner, setTreatmentBanner] = useState<Banner>(null);
+
   const [busy, setBusy] = useState<string | null>(null);
 
   const boxly = useCallback(
@@ -85,7 +119,7 @@ export default function BoxlyConfigPanel({
     setReady(false);
     setLoadError(null);
     try {
-      const [boxesRes, auto, rem, laneRes, react, agent, notes, scr] = await Promise.all([
+      const [boxesRes, auto, rem, laneRes, react, agent, notes, scr, treatRes, practRes] = await Promise.all([
         boxly("leads/boxes").catch(() => []),
         boxly("agent/auto-config").catch(() => ({})),
         boxly("agent/reminder-config").catch(() => ({})),
@@ -94,6 +128,8 @@ export default function BoxlyConfigPanel({
         boxly("agent/config").catch(() => ({})),
         boxly("agent/prompt-notes").catch(() => ({})),
         boxly("scraper/config").catch(() => ({})),
+        boxly("client/treatment-config").catch(() => ({})),
+        boxly("client/practitioners").catch(() => ({ practitioners: [] })),
       ]);
 
       setBoxes(Array.isArray(boxesRes) ? boxesRes : []);
@@ -115,6 +151,9 @@ export default function BoxlyConfigPanel({
         for (const [k, v] of Object.entries(scr as ScraperConfig)) edits[k] = v?.value;
         setScraperEdits(edits);
       }
+      setTreatments(Array.isArray(treatRes.treatments) ? treatRes.treatments : []);
+      if (Array.isArray(treatRes.appointment_length_options)) setLengthOptions(treatRes.appointment_length_options);
+      setPractitioners(Array.isArray(practRes.practitioners) ? practRes.practitioners : []);
       setReady(true);
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : "Failed to load config");
@@ -287,6 +326,57 @@ export default function BoxlyConfigPanel({
     }
   }
 
+  // ─── Per-treatment (per-lane) client controls ──────────────────────────────
+  function updateTreatment(id: string, patch: Partial<Treatment>) {
+    setTreatments((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
+  }
+  function addTreatment() {
+    setTreatments((prev) => {
+      const existing = new Set(prev.map((t) => t.id));
+      let id = treatmentIdFromName("New Treatment");
+      let suffix = 2;
+      while (existing.has(id)) {
+        id = `${treatmentIdFromName("New Treatment")}-${suffix}`;
+        suffix += 1;
+      }
+      return [
+        ...prev,
+        {
+          id,
+          name: "New Treatment",
+          treatment_page_url: "",
+          practitioner_ids: [],
+          appointment_length_minutes: 30,
+          deposit_required: true,
+          deposit_amount: 30,
+        },
+      ];
+    });
+  }
+  function removeTreatment(id: string) {
+    if (CORE_TREATMENT_IDS.has(id)) return;
+    setTreatments((prev) => prev.filter((t) => t.id !== id));
+  }
+  function togglePractitioner(treatment: Treatment, practitionerId: string) {
+    const ids = new Set(treatment.practitioner_ids ?? []);
+    if (ids.has(practitionerId)) ids.delete(practitionerId);
+    else ids.add(practitionerId);
+    updateTreatment(treatment.id, { practitioner_ids: [...ids] });
+  }
+  async function saveTreatments() {
+    setBusy("treatments");
+    setTreatmentBanner(null);
+    try {
+      const res = await boxly("client/treatment-config", { method: "PUT", body: { treatments } });
+      if (Array.isArray(res.treatments)) setTreatments(res.treatments);
+      setTreatmentBanner({ ok: true, msg: "Treatment config saved" });
+    } catch (err) {
+      setTreatmentBanner({ ok: false, msg: err instanceof Error ? err.message : "Save failed" });
+    } finally {
+      setBusy(null);
+    }
+  }
+
   // ─── Live actions (guarded) ────────────────────────────────────────────────
   async function runAction(label: string, path: string, body?: unknown) {
     if (typeof window !== "undefined") {
@@ -329,6 +419,128 @@ export default function BoxlyConfigPanel({
 
       {ready && !loadError && (
         <>
+          {/* Per-treatment (per-lane) client controls */}
+          <Section
+            title="Treatment controls"
+            subtitle="Per-treatment settings the booking agent uses: page, clinicians, appointment length, and deposit."
+            action={
+              <button
+                onClick={addTreatment}
+                className="rounded-full border border-line bg-white px-3 py-2 text-xs font-semibold text-pine hover:border-pine"
+              >
+                + Add treatment
+              </button>
+            }
+          >
+            {treatments.length === 0 ? (
+              <p className="text-sm italic text-ink/45">No treatments configured for this practice yet.</p>
+            ) : (
+              <div className="space-y-3">
+                {treatments.map((t) => (
+                  <div key={t.id} className="space-y-3 rounded-2xl border border-line bg-mist/30 p-4">
+                    <div className="flex items-center justify-between gap-2">
+                      <input
+                        type="text"
+                        value={t.name}
+                        onChange={(e) => updateTreatment(t.id, { name: e.target.value })}
+                        className="min-w-0 flex-1 rounded-xl border border-line bg-white px-3 py-2 text-sm font-semibold outline-none focus:border-pine/40"
+                      />
+                      {!CORE_TREATMENT_IDS.has(t.id) && (
+                        <button
+                          onClick={() => removeTreatment(t.id)}
+                          className="shrink-0 rounded-full px-2 py-1 text-xs font-semibold text-ink/50 hover:text-red-600"
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-semibold uppercase tracking-wide text-ink/55">Treatment page URL</label>
+                      <input
+                        type="url"
+                        value={t.treatment_page_url}
+                        onChange={(e) => updateTreatment(t.id, { treatment_page_url: e.target.value })}
+                        placeholder="https://practice.co.uk/treatments/…"
+                        className="w-full rounded-xl border border-line bg-white px-3 py-2 text-sm outline-none focus:border-pine/40"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                      <label className="space-y-1">
+                        <span className="block text-[10px] font-semibold uppercase tracking-wide text-ink/55">Appointment length</span>
+                        <select
+                          value={t.appointment_length_minutes}
+                          onChange={(e) => updateTreatment(t.id, { appointment_length_minutes: Number(e.target.value) })}
+                          className="w-full rounded-xl border border-line bg-white px-2 py-2 text-sm outline-none focus:border-pine/40"
+                        >
+                          {lengthOptions.map((m) => (
+                            <option key={m} value={m}>{m} minutes</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="flex items-end gap-2 pb-1">
+                        <input
+                          type="checkbox"
+                          checked={t.deposit_required}
+                          onChange={(e) => updateTreatment(t.id, { deposit_required: e.target.checked })}
+                          className="h-4 w-4 accent-pine"
+                        />
+                        <span className="text-sm font-semibold text-ink">Deposit required</span>
+                      </label>
+                      <LabeledNumber
+                        label="Deposit amount"
+                        value={t.deposit_amount}
+                        min={0}
+                        max={100000}
+                        step={1}
+                        onChange={(v) => updateTreatment(t.id, { deposit_amount: v })}
+                      />
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-semibold uppercase tracking-wide text-ink/55">Clinicians</span>
+                        <span className="text-xs font-semibold text-pine">{(t.practitioner_ids ?? []).length} selected</span>
+                      </div>
+                      {practitioners.length === 0 ? (
+                        <p className="rounded-xl bg-mist/60 px-3 py-2 text-xs text-ink/55">
+                          Dentally practitioners aren&apos;t available from this deployment yet.
+                        </p>
+                      ) : (
+                        <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
+                          {practitioners.map((p) => {
+                            const on = (t.practitioner_ids ?? []).includes(p.id);
+                            return (
+                              <button
+                                key={p.id}
+                                onClick={() => togglePractitioner(t, p.id)}
+                                className={`rounded-xl border px-2.5 py-2 text-left text-xs font-semibold transition ${on ? "border-pine bg-pine/10 text-pine" : "border-line bg-white text-ink hover:border-pine/40"}`}
+                              >
+                                {on ? "✓ " : "+ "}
+                                {p.name}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <Banner banner={treatmentBanner} />
+            <div className="border-t border-line pt-3">
+              <button
+                disabled={busy === "treatments"}
+                onClick={saveTreatments}
+                className="rounded-full bg-pine px-4 py-2 text-xs font-semibold text-lime disabled:opacity-50"
+              >
+                Save treatment config
+              </button>
+            </div>
+          </Section>
+
           {/* Automation */}
           <Section
             title="Automation"
