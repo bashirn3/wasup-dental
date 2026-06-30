@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
+import { parseClientEditable } from "@/lib/agent-editable";
 
 export const dynamic = "force-dynamic";
 
@@ -114,6 +115,11 @@ export async function GET(req: NextRequest) {
       procedures: active.procedures ?? [],
       appointmentSettings: active.appointment_settings ?? {},
       workflowSettings: active.workflow_settings ?? {},
+      // Fully-typed, safe-defaulted client-editable surface (facts, misc,
+      // per-treatment openers/templates) for the worker to overlay.
+      clientEditable: parseClientEditable(
+        (active.workflow_settings as { clientEditable?: unknown } | null)?.clientEditable,
+      ),
       autoContactEnabled: active.auto_contact_enabled,
       launchState: active.launch_state,
       updatedAt: active.updated_at,

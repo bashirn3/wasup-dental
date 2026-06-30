@@ -46,6 +46,16 @@ export default function SsoCallbackClient() {
   const router = useRouter();
   const hasRun = useRef(false);
 
+  // Safety net: if Clerk returns an unexpected OAuth state, none of the
+  // branches below match and the page would spin forever. Bounce back to
+  // sign-in after a wait so the user can retry (or use email instead).
+  useEffect(() => {
+    const t = setTimeout(() => {
+      navigateToUrl(router, `${CLERK_SIGN_IN_URL}?error=oauth_timeout`);
+    }, 15_000);
+    return () => clearTimeout(t);
+  }, [router]);
+
   useEffect(() => {
     void (async () => {
       if (!clerk.loaded || hasRun.current) return;
