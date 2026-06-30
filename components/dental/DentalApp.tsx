@@ -21,6 +21,16 @@ import BoxlyConfigPanel from "@/components/dental/BoxlyConfigPanel";
 import { MIcon } from "@/components/mot/icons";
 import { defaultAgentPrompt, defaultFirstMessage, treatmentLabels } from "@/lib/dental-demo-data";
 import type { DentalDashboardData, DentalLead, DentalMessage } from "@/lib/dental-types";
+import {
+  DENTAL_TREATMENTS,
+  treatmentLabel,
+  emptyMisc,
+  emptyTemplate,
+  emptyTreatmentFacts,
+  type FirstMessageTemplate,
+  type MiscInfo,
+  type TreatmentFacts,
+} from "@/lib/agent-editable";
 
 type TabKey = "dashboard" | "leads" | "activity" | "agent" | "config" | "connect";
 type LeadFilters = {
@@ -64,6 +74,10 @@ export default function DentalApp() {
   const [closingHours, setClosingHours] = useState("");
   const [knowledge, setKnowledge] = useState("");
   const [treatmentFirstMessages, setTreatmentFirstMessages] = useState<Record<string, string>>({});
+  const [treatmentTemplates, setTreatmentTemplates] = useState<Record<string, FirstMessageTemplate>>({});
+  const [treatmentFacts, setTreatmentFacts] = useState<Record<string, TreatmentFacts>>({});
+  const [misc, setMisc] = useState<MiscInfo>(emptyMisc());
+  const [otherMenuItems, setOtherMenuItems] = useState("");
   const [configVersion, setConfigVersion] = useState<number | null>(null);
   const [confirmSave, setConfirmSave] = useState(false);
   const [leadFilters, setLeadFilters] = useState<LeadFilters>(emptyFilters);
@@ -75,7 +89,11 @@ export default function DentalApp() {
     openingHours: "",
     closingHours: "",
     knowledge: "",
+    otherMenuItems: "",
     treatmentFirstMessages: {} as Record<string, string>,
+    treatmentTemplates: {} as Record<string, FirstMessageTemplate>,
+    treatmentFacts: {} as Record<string, TreatmentFacts>,
+    misc: emptyMisc() as MiscInfo,
   });
   const [chatMessages, setChatMessages] = useState<DentalMessage[]>([]);
   const [chatLoading, setChatLoading] = useState(false);
@@ -115,16 +133,15 @@ export default function DentalApp() {
     return () => window.clearInterval(timer);
   }, [load]);
 
-  useEffect(() => {
-    async function loadConfig() {
-      const res = await fetch("/api/agent-config", { cache: "no-store" });
+  const loadConfig = useCallback(async () => {
+      const params = new URLSearchParams();
+      if (activePracticeId) params.set("practiceId", activePracticeId);
+      const res = await fetch(`/api/agent-config?${params.toString()}`, { cache: "no-store" });
       const payload = await res.json().catch(() => ({}));
       if (payload.config) {
         const editable = payload.config.clientEditable ?? {};
-        const loadedTreatmentMessages =
-          editable.treatmentFirstMessages && typeof editable.treatmentFirstMessages === "object"
-            ? (editable.treatmentFirstMessages as Record<string, string>)
-            : {};
+        const asStringRecord = (value: unknown): Record<string, string> =>
+          value && typeof value === "object" ? (value as Record<string, string>) : {};
         const loaded = {
           firstMessage: payload.config.firstMessage ?? defaultFirstMessage,
           prompt: payload.config.prompt ?? defaultAgentPrompt,
@@ -132,7 +149,11 @@ export default function DentalApp() {
           openingHours: editable.openingHours ?? "",
           closingHours: editable.closingHours ?? "",
           knowledge: editable.knowledge ?? "",
-          treatmentFirstMessages: loadedTreatmentMessages,
+          otherMenuItems: editable.otherMenuItems ?? "",
+          treatmentFirstMessages: asStringRecord(editable.treatmentFirstMessages),
+          treatmentTemplates: (editable.treatmentTemplates ?? {}) as Record<string, FirstMessageTemplate>,
+          treatmentFacts: (editable.treatmentFacts ?? {}) as Record<string, TreatmentFacts>,
+          misc: { ...emptyMisc(), ...(editable.misc ?? {}) } as MiscInfo,
         };
         setFirstMessage(loaded.firstMessage);
         setPrompt(loaded.prompt);
@@ -140,15 +161,21 @@ export default function DentalApp() {
         setOpeningHours(loaded.openingHours);
         setClosingHours(loaded.closingHours);
         setKnowledge(loaded.knowledge);
-        setTreatmentFirstMessages(loadedTreatmentMessages);
+        setOtherMenuItems(loaded.otherMenuItems);
+        setTreatmentFirstMessages(loaded.treatmentFirstMessages);
+        setTreatmentTemplates(loaded.treatmentTemplates);
+        setTreatmentFacts(loaded.treatmentFacts);
+        setMisc(loaded.misc);
         setSavedSnapshot(loaded);
         setConfigVersion(
           typeof payload.config.versionNumber === "number" ? payload.config.versionNumber : null,
         );
       }
-    }
+  }, [activePracticeId]);
+
+  useEffect(() => {
     void loadConfig();
-  }, []);
+  }, [loadConfig]);
 
   const leads = useMemo(() => data?.leads ?? [], [data]);
   const workspaces = data?.workspaces ?? [];
@@ -166,7 +193,11 @@ export default function DentalApp() {
       openingHours !== savedSnapshot.openingHours ||
       closingHours !== savedSnapshot.closingHours ||
       knowledge !== savedSnapshot.knowledge ||
-      JSON.stringify(treatmentFirstMessages) !== JSON.stringify(savedSnapshot.treatmentFirstMessages),
+      otherMenuItems !== savedSnapshot.otherMenuItems ||
+      JSON.stringify(treatmentFirstMessages) !== JSON.stringify(savedSnapshot.treatmentFirstMessages) ||
+      JSON.stringify(treatmentTemplates) !== JSON.stringify(savedSnapshot.treatmentTemplates) ||
+      JSON.stringify(treatmentFacts) !== JSON.stringify(savedSnapshot.treatmentFacts) ||
+      JSON.stringify(misc) !== JSON.stringify(savedSnapshot.misc),
     [
       firstMessage,
       prompt,
@@ -174,7 +205,11 @@ export default function DentalApp() {
       openingHours,
       closingHours,
       knowledge,
+      otherMenuItems,
       treatmentFirstMessages,
+      treatmentTemplates,
+      treatmentFacts,
+      misc,
       savedSnapshot,
     ],
   );
@@ -235,7 +270,11 @@ export default function DentalApp() {
           openingHours,
           closingHours,
           knowledge,
+          otherMenuItems,
+          misc,
           treatmentFirstMessages,
+          treatmentTemplates,
+          treatmentFacts,
         }),
       });
       const payload = await res.json().catch(() => ({}));
@@ -250,7 +289,11 @@ export default function DentalApp() {
           openingHours,
           closingHours,
           knowledge,
+          otherMenuItems,
           treatmentFirstMessages,
+          treatmentTemplates,
+          treatmentFacts,
+          misc,
         });
         setSaveState("saved");
       } else {
@@ -282,9 +325,15 @@ export default function DentalApp() {
       <main className="flex min-h-dvh items-center justify-center bg-paper px-5 text-ink">
         <div className="max-w-md rounded-[2rem] bg-white p-6 text-center shadow-sm">
           <h1 className="text-2xl font-semibold tracking-tight">No workspace access</h1>
+          {(data as { signedInEmail?: string | null })?.signedInEmail && (
+            <p className="mt-2 text-sm font-medium text-ink/70">
+              Signed in as {(data as { signedInEmail?: string | null }).signedInEmail}
+            </p>
+          )}
           <p className="mt-2 text-sm leading-6 text-ink/55">
-            Your account is not connected to a dental practice yet. Ask an admin to invite you,
-            or start a new practice setup.
+            This account is not connected to a dental practice yet. Make sure you signed in with the
+            email your admin invited, ask an admin to invite this address, or start a new practice
+            setup.
           </p>
           <Link
             href="/start?new=1"
@@ -412,7 +461,11 @@ export default function DentalApp() {
               openingHours={openingHours}
               closingHours={closingHours}
               knowledge={knowledge}
+              otherMenuItems={otherMenuItems}
+              misc={misc}
               treatmentFirstMessages={treatmentFirstMessages}
+              treatmentTemplates={treatmentTemplates}
+              treatmentFacts={treatmentFacts}
               firstMessage={firstMessage}
               prompt={prompt}
               saveState={saveState}
@@ -422,12 +475,27 @@ export default function DentalApp() {
               onOpeningHours={setOpeningHours}
               onClosingHours={setClosingHours}
               onKnowledge={setKnowledge}
+              onOtherMenuItems={setOtherMenuItems}
+              onMisc={(patch) => setMisc((prev) => ({ ...prev, ...patch }))}
               onTreatmentFirstMessage={(id, value) =>
                 setTreatmentFirstMessages((prev) => ({ ...prev, [id]: value }))
+              }
+              onTreatmentTemplate={(id, patch) =>
+                setTreatmentTemplates((prev) => ({
+                  ...prev,
+                  [id]: { ...emptyTemplate(), ...prev[id], ...patch },
+                }))
+              }
+              onTreatmentFacts={(id, patch) =>
+                setTreatmentFacts((prev) => ({
+                  ...prev,
+                  [id]: { ...emptyTreatmentFacts(), ...prev[id], ...patch },
+                }))
               }
               onFirstMessage={setFirstMessage}
               onPrompt={setPrompt}
               onRequestSave={() => setConfirmSave(true)}
+              onReloadConfig={loadConfig}
             />
           )}
           {tab === "config" && (
@@ -1412,27 +1480,18 @@ function AnalyticsPanel({
   );
 }
 
-const TREATMENT_LABELS: Record<string, string> = {
-  invisalign: "Invisalign",
-  implants: "Dental Implants",
-  full_arch_implants: "Full Arch Implants",
-  composites: "Composite Bonding",
-  veneers: "Veneers",
-  whitening: "Teeth Whitening",
-  hygiene: "Hygiene",
-};
-
-function treatmentLabel(id: string): string {
-  return (
-    TREATMENT_LABELS[id] ??
-    id
-      .split(/[_-]/)
-      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-      .join(" ")
-  );
-}
-
 type SimMessage = { id: string; role: "assistant" | "patient"; content: string };
+
+type AgentVersion = {
+  id: string;
+  versionNumber: number;
+  isActive: boolean;
+  promptPreview: string;
+  firstMessagePreview: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+};
 
 // The production Regent prompt replies as {"response":"..."} JSON; unwrap it so the
 // simulator shows plain WhatsApp text instead of raw JSON.
@@ -1458,13 +1517,33 @@ function extractReplyText(raw: unknown): string {
   }
   return text;
 }
-type ScanKnowledge = {
-  summary?: string;
-  benefits?: string[];
-  pricing?: string;
-  finance?: string;
-  confidence?: number;
-};
+function LabeledLines({
+  label,
+  hint,
+  value,
+  placeholder,
+  onChange,
+}: {
+  label: string;
+  hint?: string;
+  value: string[];
+  placeholder?: string;
+  onChange: (value: string[]) => void;
+}) {
+  return (
+    <div>
+      <label className="block text-sm font-semibold">{label}</label>
+      {hint ? <p className="mt-1 text-xs text-ink/45">{hint}</p> : null}
+      <textarea
+        value={value.join("\n")}
+        onChange={(event) => onChange(event.target.value.split("\n"))}
+        placeholder={placeholder}
+        className="mt-2 min-h-20 w-full rounded-2xl border border-line bg-mist/50 p-3 text-sm leading-6 outline-none focus:ring-2 focus:ring-lime"
+      />
+      <p className="mt-1 text-[11px] text-ink/40">One per line.</p>
+    </div>
+  );
+}
 
 function AgentPanel({
   practiceName,
@@ -1473,7 +1552,11 @@ function AgentPanel({
   openingHours,
   closingHours,
   knowledge,
+  otherMenuItems,
+  misc,
   treatmentFirstMessages,
+  treatmentTemplates,
+  treatmentFacts,
   firstMessage,
   prompt,
   saveState,
@@ -1483,10 +1566,15 @@ function AgentPanel({
   onOpeningHours,
   onClosingHours,
   onKnowledge,
+  onOtherMenuItems,
+  onMisc,
   onTreatmentFirstMessage,
+  onTreatmentTemplate,
+  onTreatmentFacts,
   onFirstMessage,
   onPrompt,
   onRequestSave,
+  onReloadConfig,
 }: {
   practiceName: string;
   practiceId: string | null;
@@ -1494,7 +1582,11 @@ function AgentPanel({
   openingHours: string;
   closingHours: string;
   knowledge: string;
+  otherMenuItems: string;
+  misc: MiscInfo;
   treatmentFirstMessages: Record<string, string>;
+  treatmentTemplates: Record<string, FirstMessageTemplate>;
+  treatmentFacts: Record<string, TreatmentFacts>;
   firstMessage: string;
   prompt: string;
   saveState: string;
@@ -1504,14 +1596,18 @@ function AgentPanel({
   onOpeningHours: (value: string) => void;
   onClosingHours: (value: string) => void;
   onKnowledge: (value: string) => void;
+  onOtherMenuItems: (value: string) => void;
+  onMisc: (patch: Partial<MiscInfo>) => void;
   onTreatmentFirstMessage: (id: string, value: string) => void;
+  onTreatmentTemplate: (id: string, patch: Partial<FirstMessageTemplate>) => void;
+  onTreatmentFacts: (id: string, patch: Partial<TreatmentFacts>) => void;
   onFirstMessage: (value: string) => void;
   onPrompt: (value: string) => void;
   onRequestSave: () => void;
+  onReloadConfig: () => Promise<void> | void;
 }) {
   const displayName = assistantName.trim() || "your assistant";
-  const treatmentIds = Object.keys(treatmentFirstMessages);
-  const treatmentOptions = treatmentIds.length ? treatmentIds : Object.keys(TREATMENT_LABELS);
+  const treatmentOptions = DENTAL_TREATMENTS as readonly string[];
   const promptWordCount = prompt.trim().split(/\s+/).filter(Boolean).length;
 
   const [firstMessageOpen, setFirstMessageOpen] = useState(false);
@@ -1523,8 +1619,10 @@ function AgentPanel({
   const [scan, setScan] = useState<{
     status: "idle" | "scanning" | "done" | "error";
     message?: string;
-    result?: ScanKnowledge;
   }>({ status: "idle" });
+
+  const facts = treatmentFacts[selectedTreatment] ?? emptyTreatmentFacts();
+  const template = treatmentTemplates[selectedTreatment] ?? emptyTemplate();
 
   async function scanWebsite() {
     if (!websiteUrl.trim()) return;
@@ -1540,13 +1638,79 @@ function AgentPanel({
         setScan({ status: "error", message: payload.error ?? "Website scan failed." });
         return;
       }
+      const k = (payload.knowledge ?? {}) as Partial<TreatmentFacts> & {
+        finance?: string;
+        consultationCta?: string;
+      };
+      // Merge scraped facts into the editable card for this treatment.
+      onTreatmentFacts(selectedTreatment, {
+        generalInfo: typeof k.generalInfo === "string" ? k.generalInfo : facts.generalInfo,
+        benefits: Array.isArray(k.benefits) ? k.benefits : facts.benefits,
+        suitability: Array.isArray(k.suitability) ? k.suitability : facts.suitability,
+        process: Array.isArray(k.process) ? k.process : facts.process,
+        pricing: typeof k.pricing === "string" ? k.pricing : facts.pricing,
+        financeOffering:
+          typeof k.financeOffering === "string"
+            ? k.financeOffering
+            : typeof k.finance === "string"
+              ? k.finance
+              : facts.financeOffering,
+        pricingOffers: Array.isArray(k.pricingOffers) ? k.pricingOffers : facts.pricingOffers,
+        contraindications: Array.isArray(k.contraindications)
+          ? k.contraindications
+          : facts.contraindications,
+        confidence: typeof k.confidence === "number" ? k.confidence : facts.confidence,
+      });
       setScan({
         status: "done",
-        result: payload.knowledge as ScanKnowledge,
-        message: payload.persisted ? "Saved to knowledge packets." : "Scanned. Seed Supabase to persist.",
+        message: payload.persisted
+          ? "Scanned and merged into the fact cards below."
+          : "Scanned into the fact cards below. Save to persist.",
       });
     } catch {
       setScan({ status: "error", message: "Scan endpoint is not reachable." });
+    }
+  }
+
+  const [versionsOpen, setVersionsOpen] = useState(false);
+  const [versions, setVersions] = useState<AgentVersion[]>([]);
+  const [versionsLoading, setVersionsLoading] = useState(false);
+  const [activatingId, setActivatingId] = useState<string | null>(null);
+
+  const loadVersions = useCallback(async () => {
+    setVersionsLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (practiceId) params.set("practiceId", practiceId);
+      const res = await fetch(`/api/agent-config/versions?${params.toString()}`, {
+        cache: "no-store",
+      });
+      const payload = await res.json().catch(() => ({}));
+      setVersions(Array.isArray(payload.versions) ? payload.versions : []);
+    } finally {
+      setVersionsLoading(false);
+    }
+  }, [practiceId]);
+
+  function openVersions() {
+    setVersionsOpen(true);
+    void loadVersions();
+  }
+
+  async function activateVersion(versionId: string) {
+    setActivatingId(versionId);
+    try {
+      const res = await fetch("/api/agent-config/versions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ practiceId, versionId }),
+      });
+      if (res.ok) {
+        await onReloadConfig();
+        await loadVersions();
+      }
+    } finally {
+      setActivatingId(null);
     }
   }
 
@@ -1571,6 +1735,39 @@ function AgentPanel({
       );
     }
     if (knowledge.trim()) lines.push(`Practice knowledge you may use:\n${knowledge.trim()}`);
+
+    const miscBits: string[] = [];
+    if (misc.address.trim()) miscBits.push(`Address: ${misc.address.trim()}`);
+    if (misc.phone.trim()) miscBits.push(`Phone: ${misc.phone.trim()}`);
+    if (misc.parking.trim()) miscBits.push(`Parking: ${misc.parking.trim()}`);
+    if (misc.notes.trim()) miscBits.push(`Notes: ${misc.notes.trim()}`);
+    if (miscBits.length) lines.push(`Practice details:\n${miscBits.join("\n")}`);
+
+    // Structured fact card for the treatment currently being tested.
+    const f = treatmentFacts[selectedTreatment];
+    if (f) {
+      const factBits: string[] = [];
+      if (f.generalInfo.trim()) factBits.push(f.generalInfo.trim());
+      if (f.benefits.length) factBits.push(`Benefits: ${f.benefits.join("; ")}`);
+      if (f.suitability.length) factBits.push(`Suitable for: ${f.suitability.join("; ")}`);
+      if (f.process.length) factBits.push(`Process: ${f.process.join("; ")}`);
+      if (f.pricing.trim()) factBits.push(`Pricing: ${f.pricing.trim()}`);
+      if (f.financeOffering.trim()) factBits.push(`Finance: ${f.financeOffering.trim()}`);
+      if (f.pricingOffers.length) factBits.push(`Current offers: ${f.pricingOffers.join("; ")}`);
+      if (f.contraindications.length)
+        factBits.push(`Never claim / do not say: ${f.contraindications.join("; ")}`);
+      if (f.faqs.length)
+        factBits.push(
+          `FAQs:\n${f.faqs.map((q) => `Q: ${q.question}\nA: ${q.answer}`).join("\n")}`,
+        );
+      if (factBits.length)
+        lines.push(
+          `Approved facts for ${treatmentLabel(selectedTreatment)} (use only these, never invent):\n${factBits.join("\n")}`,
+        );
+    }
+
+    if (otherMenuItems.trim()) lines.push(`Other treatments you may mention briefly:\n${otherMenuItems.trim()}`);
+
     const opener = treatmentFirstMessages[selectedTreatment]?.trim();
     if (opener) lines.push(`For ${treatmentLabel(selectedTreatment)} enquiries your opening style is: "${opener}"`);
     lines.push(
@@ -1633,6 +1830,77 @@ function AgentPanel({
 
   return (
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_390px]">
+      {versionsOpen && (
+        <div className="fixed inset-0 z-50 flex justify-end bg-ink/30 backdrop-blur-sm">
+          <button
+            type="button"
+            aria-label="Close version history"
+            onClick={() => setVersionsOpen(false)}
+            className="flex-1"
+          />
+          <div className="flex h-full w-full max-w-md flex-col bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-line px-5 py-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-ink/40">History</p>
+                <h3 className="mt-1 text-lg font-semibold">Prompt versions</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setVersionsOpen(false)}
+                className="text-ink/40 transition hover:text-pine"
+                aria-label="Close"
+              >
+                <MIcon.close size={20} />
+              </button>
+            </div>
+            <div className="flex-1 space-y-3 overflow-y-auto px-5 py-4">
+              {versionsLoading ? (
+                <p className="text-sm text-ink/45">Loading versions…</p>
+              ) : versions.length === 0 ? (
+                <p className="text-sm text-ink/45">No saved versions yet.</p>
+              ) : (
+                versions.map((version) => (
+                  <div
+                    key={version.id}
+                    className={`rounded-2xl border p-4 ${
+                      version.isActive ? "border-pine bg-pine/5" : "border-line bg-white"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-semibold">v{version.versionNumber}</span>
+                        {version.isActive ? (
+                          <span className="rounded-full bg-lime px-2.5 py-0.5 text-[11px] font-semibold text-pine-deep">
+                            Active
+                          </span>
+                        ) : null}
+                      </div>
+                      {version.isActive ? (
+                        <span className="text-xs text-ink/40">Live</span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => activateVersion(version.id)}
+                          disabled={activatingId === version.id}
+                          className="rounded-full border border-pine px-3 py-1.5 text-xs font-semibold text-pine transition hover:bg-pine/5 disabled:opacity-50"
+                        >
+                          {activatingId === version.id ? "Activating…" : "Make active"}
+                        </button>
+                      )}
+                    </div>
+                    <p className="mt-2 line-clamp-2 text-xs leading-5 text-ink/60">
+                      {version.promptPreview || "No prompt text."}
+                    </p>
+                    <p className="mt-2 text-[11px] text-ink/40">
+                      {new Date(version.createdAt).toLocaleString()} · {version.createdBy}
+                    </p>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
       <div className="space-y-4">
         <div className="rounded-[2rem] bg-white p-5 shadow-sm">
           <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1644,6 +1912,14 @@ function AgentPanel({
                 in the WhatsApp simulator. Saving creates a new approved version for {practiceName}.
               </p>
             </div>
+            <button
+              type="button"
+              onClick={openVersions}
+              className="inline-flex items-center gap-2 rounded-full border border-line px-4 py-2 text-sm font-semibold text-pine transition hover:border-pine"
+            >
+              <MIcon.refresh size={15} />
+              Version history
+            </button>
           </div>
           <div className="mt-4 flex flex-wrap gap-2 text-xs font-semibold">
             <span className="rounded-full bg-mist px-3 py-1 text-ink/55">{practiceName}</span>
@@ -1781,13 +2057,25 @@ function AgentPanel({
         </div>
 
         <div className="rounded-[2rem] bg-white p-5 shadow-sm">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-ink/40">Scan</p>
-          <h3 className="mt-2 text-lg font-semibold">Scraped knowledge</h3>
-          <p className="mt-1 text-xs text-ink/45">
-            Pull {treatmentLabel(selectedTreatment)} facts from your website. Review, then add them to the
-            assistant&rsquo;s knowledge.
-          </p>
-          <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto]">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-ink/40">Knowledge</p>
+              <h3 className="mt-2 text-lg font-semibold">
+                {treatmentLabel(selectedTreatment)} fact cards
+              </h3>
+              <p className="mt-1 text-xs text-ink/45">
+                The exact facts the assistant is allowed to use for {treatmentLabel(selectedTreatment)}.
+                Scan your website to auto-fill, then refine.
+              </p>
+            </div>
+            {facts.confidence > 0 ? (
+              <span className="rounded-full bg-mist px-3 py-1 text-[11px] font-semibold text-ink/55">
+                {Math.round(facts.confidence * 100)}% scraped confidence
+              </span>
+            ) : null}
+          </div>
+
+          <div className="mt-4 grid gap-2 sm:grid-cols-[1fr_auto]">
             <input
               value={websiteUrl}
               onChange={(event) => {
@@ -1804,61 +2092,273 @@ function AgentPanel({
               className="inline-flex items-center justify-center gap-2 rounded-full bg-pine px-5 py-3 text-sm font-semibold text-lime transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <MIcon.refresh size={16} />
-              {scan.status === "scanning" ? "Scanning..." : scan.result ? "Rescan" : "Scan"}
+              {scan.status === "scanning" ? "Scanning..." : scan.status === "done" ? "Rescan" : "Scan website"}
             </button>
           </div>
           {scan.message && (
-            <p className={`mt-3 text-xs ${scan.status === "error" ? "text-red-600" : "text-ink/55"}`}>
+            <p className={`mt-2 text-xs ${scan.status === "error" ? "text-red-600" : "text-ink/55"}`}>
               {scan.message}
             </p>
           )}
-          {scan.result && (
-            <div className="mt-4 space-y-3 rounded-2xl border border-line bg-mist/40 p-4 text-sm">
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-ink/45">
-                  General information
-                </p>
-                {typeof scan.result.confidence === "number" && (
-                  <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-ink/55">
-                    {Math.round(scan.result.confidence * 100)}% confidence
-                  </span>
+
+          <div className="mt-5 space-y-4">
+            <div>
+              <label className="block text-sm font-semibold">General information</label>
+              <textarea
+                value={facts.generalInfo}
+                onChange={(event) =>
+                  onTreatmentFacts(selectedTreatment, { generalInfo: event.target.value })
+                }
+                placeholder={`What ${treatmentLabel(selectedTreatment)} is and who it helps.`}
+                className="mt-2 min-h-24 w-full rounded-2xl border border-line bg-mist/50 p-3 text-sm leading-6 outline-none focus:ring-2 focus:ring-lime"
+              />
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <LabeledLines
+                label="Benefits"
+                value={facts.benefits}
+                placeholder="Straighter teeth in months"
+                onChange={(value) => onTreatmentFacts(selectedTreatment, { benefits: value })}
+              />
+              <LabeledLines
+                label="Suitability"
+                value={facts.suitability}
+                placeholder="Adults with mild–moderate crowding"
+                onChange={(value) => onTreatmentFacts(selectedTreatment, { suitability: value })}
+              />
+            </div>
+
+            <LabeledLines
+              label="Process / steps"
+              value={facts.process}
+              placeholder="1. Free consultation"
+              onChange={(value) => onTreatmentFacts(selectedTreatment, { process: value })}
+            />
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label className="block text-sm font-semibold">Pricing</label>
+                <textarea
+                  value={facts.pricing}
+                  onChange={(event) =>
+                    onTreatmentFacts(selectedTreatment, { pricing: event.target.value })
+                  }
+                  placeholder="From £2,500"
+                  className="mt-2 min-h-20 w-full rounded-2xl border border-line bg-mist/50 p-3 text-sm leading-6 outline-none focus:ring-2 focus:ring-lime"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-semibold">Finance offering</label>
+                <textarea
+                  value={facts.financeOffering}
+                  onChange={(event) =>
+                    onTreatmentFacts(selectedTreatment, { financeOffering: event.target.value })
+                  }
+                  placeholder="0% finance over 12 months"
+                  className="mt-2 min-h-20 w-full rounded-2xl border border-line bg-mist/50 p-3 text-sm leading-6 outline-none focus:ring-2 focus:ring-lime"
+                />
+              </div>
+            </div>
+
+            <LabeledLines
+              label="Pricing offers"
+              hint="Current promotions, e.g. £500 off this month."
+              value={facts.pricingOffers}
+              placeholder="£500 off Invisalign in July"
+              onChange={(value) => onTreatmentFacts(selectedTreatment, { pricingOffers: value })}
+            />
+
+            <LabeledLines
+              label="Do not claim / contraindications"
+              hint="Things the assistant must never promise or recommend."
+              value={facts.contraindications}
+              placeholder="Never guarantee a specific number of months"
+              onChange={(value) => onTreatmentFacts(selectedTreatment, { contraindications: value })}
+            />
+
+            <div>
+              <div className="flex items-center justify-between">
+                <label className="block text-sm font-semibold">FAQs</label>
+                <button
+                  type="button"
+                  onClick={() =>
+                    onTreatmentFacts(selectedTreatment, {
+                      faqs: [...facts.faqs, { question: "", answer: "" }],
+                    })
+                  }
+                  className="inline-flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-xs font-semibold text-pine transition hover:border-pine"
+                >
+                  <MIcon.plus size={13} /> Add FAQ
+                </button>
+              </div>
+              <div className="mt-3 space-y-3">
+                {facts.faqs.length === 0 ? (
+                  <p className="rounded-2xl border border-dashed border-line px-4 py-3 text-xs text-ink/45">
+                    No FAQs yet. Add the questions patients ask most.
+                  </p>
+                ) : (
+                  facts.faqs.map((faq, index) => (
+                    <div key={index} className="rounded-2xl border border-line bg-mist/40 p-3">
+                      <div className="flex items-start gap-2">
+                        <input
+                          value={faq.question}
+                          onChange={(event) => {
+                            const next = facts.faqs.slice();
+                            next[index] = { ...next[index], question: event.target.value };
+                            onTreatmentFacts(selectedTreatment, { faqs: next });
+                          }}
+                          placeholder="Question"
+                          className="w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-semibold outline-none focus:ring-2 focus:ring-lime"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onTreatmentFacts(selectedTreatment, {
+                              faqs: facts.faqs.filter((_, i) => i !== index),
+                            })
+                          }
+                          className="mt-1 text-ink/35 transition hover:text-red-500"
+                          aria-label="Remove FAQ"
+                        >
+                          <MIcon.close size={16} />
+                        </button>
+                      </div>
+                      <textarea
+                        value={faq.answer}
+                        onChange={(event) => {
+                          const next = facts.faqs.slice();
+                          next[index] = { ...next[index], answer: event.target.value };
+                          onTreatmentFacts(selectedTreatment, { faqs: next });
+                        }}
+                        placeholder="Answer"
+                        className="mt-2 min-h-16 w-full rounded-xl border border-line bg-white p-3 text-sm leading-6 outline-none focus:ring-2 focus:ring-lime"
+                      />
+                    </div>
+                  ))
                 )}
               </div>
-              <p className="leading-6 text-ink/70">{scan.result.summary}</p>
-              {scan.result.benefits?.length ? (
-                <ul className="space-y-1.5">
-                  {scan.result.benefits.map((item, index) => (
-                    <li key={index} className="flex gap-2 text-ink/65">
-                      <MIcon.check size={14} />
-                      <span>{item}</span>
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div className="rounded-2xl bg-white p-3">
-                  <p className="text-[11px] font-semibold uppercase tracking-wide text-ink/45">Pricing</p>
-                  <p className="mt-1 leading-6 text-ink/65">{scan.result.pricing}</p>
-                </div>
-                <div className="rounded-2xl bg-white p-3">
-                  <p className="text-[11px] font-semibold uppercase tracking-wide text-ink/45">Finance</p>
-                  <p className="mt-1 leading-6 text-ink/65">{scan.result.finance}</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  const summary = scan.result?.summary?.trim();
-                  if (!summary) return;
-                  onKnowledge(knowledge.trim() ? `${knowledge.trim()}\n\n${summary}` : summary);
-                }}
-                className="inline-flex items-center gap-2 rounded-full border border-pine px-4 py-2 text-xs font-semibold text-pine transition hover:bg-pine/5"
-              >
-                <MIcon.plus size={14} />
-                Add summary to knowledge
-              </button>
             </div>
-          )}
+          </div>
+        </div>
+
+        <div className="rounded-[2rem] bg-white p-5 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-ink/40">WhatsApp template</p>
+          <h3 className="mt-2 text-lg font-semibold">
+            Interactive opener · {treatmentLabel(selectedTreatment)}
+          </h3>
+          <p className="mt-1 text-xs text-ink/45">
+            The structured WhatsApp message (header, body, buttons) sent for this treatment.
+          </p>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className="block text-sm font-semibold">Header</label>
+              <input
+                value={template.header}
+                onChange={(event) => onTreatmentTemplate(selectedTreatment, { header: event.target.value })}
+                placeholder="Straighten your smile ✨"
+                className="mt-2 w-full rounded-2xl border border-line bg-mist/50 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-lime"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-semibold">Footer</label>
+              <input
+                value={template.footer}
+                onChange={(event) => onTreatmentTemplate(selectedTreatment, { footer: event.target.value })}
+                placeholder="Regent Dental"
+                className="mt-2 w-full rounded-2xl border border-line bg-mist/50 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-lime"
+              />
+            </div>
+          </div>
+          <div className="mt-3">
+            <label className="block text-sm font-semibold">Body</label>
+            <textarea
+              value={template.body}
+              onChange={(event) => onTreatmentTemplate(selectedTreatment, { body: event.target.value })}
+              placeholder="Hi {{name}} 👋 thanks for your interest in Invisalign…"
+              className="mt-2 min-h-24 w-full rounded-2xl border border-line bg-mist/50 p-3 text-sm leading-6 outline-none focus:ring-2 focus:ring-lime"
+            />
+          </div>
+          <div className="mt-3">
+            <label className="block text-sm font-semibold">Sub-text</label>
+            <input
+              value={template.subtext}
+              onChange={(event) => onTreatmentTemplate(selectedTreatment, { subtext: event.target.value })}
+              placeholder="Reply to book your free consultation"
+              className="mt-2 w-full rounded-2xl border border-line bg-mist/50 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-lime"
+            />
+          </div>
+          <div className="mt-3">
+            <LabeledLines
+              label="Buttons"
+              hint="Up to 3 quick-reply buttons for WhatsApp."
+              value={template.buttons}
+              placeholder="Book a consultation"
+              onChange={(value) =>
+                onTreatmentTemplate(selectedTreatment, { buttons: value.slice(0, 3) })
+              }
+            />
+          </div>
+        </div>
+
+        <div className="rounded-[2rem] bg-white p-5 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-ink/40">Practice details</p>
+          <h3 className="mt-2 text-lg font-semibold">Miscellaneous info</h3>
+          <p className="mt-1 text-xs text-ink/45">
+            Shared facts the assistant can use across every treatment.
+          </p>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className="block text-sm font-semibold">Address</label>
+              <input
+                value={misc.address}
+                onChange={(event) => onMisc({ address: event.target.value })}
+                placeholder="2A Regent Road, LS29 9EA"
+                className="mt-2 w-full rounded-2xl border border-line bg-mist/50 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-lime"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-semibold">Phone</label>
+              <input
+                value={misc.phone}
+                onChange={(event) => onMisc({ phone: event.target.value })}
+                placeholder="0113 000 0000"
+                className="mt-2 w-full rounded-2xl border border-line bg-mist/50 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-lime"
+              />
+            </div>
+          </div>
+          <div className="mt-3">
+            <label className="block text-sm font-semibold">Parking</label>
+            <input
+              value={misc.parking}
+              onChange={(event) => onMisc({ parking: event.target.value })}
+              placeholder="Limited free parking outside; pay-and-display nearby"
+              className="mt-2 w-full rounded-2xl border border-line bg-mist/50 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-lime"
+            />
+          </div>
+          <div className="mt-3">
+            <label className="block text-sm font-semibold">Notes</label>
+            <textarea
+              value={misc.notes}
+              onChange={(event) => onMisc({ notes: event.target.value })}
+              placeholder="Anything else the assistant should know."
+              className="mt-2 min-h-20 w-full rounded-2xl border border-line bg-mist/50 p-3 text-sm leading-6 outline-none focus:ring-2 focus:ring-lime"
+            />
+          </div>
+        </div>
+
+        <div className="rounded-[2rem] bg-white p-5 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-ink/40">Other treatments</p>
+          <h3 className="mt-2 text-lg font-semibold">Other menu items</h3>
+          <p className="mt-1 text-xs text-ink/45">
+            Non-core treatments the assistant can mention briefly and route to the team.
+          </p>
+          <textarea
+            value={otherMenuItems}
+            onChange={(event) => onOtherMenuItems(event.target.value)}
+            placeholder="e.g. Root canal, crowns, dentures — book via reception."
+            className="mt-3 min-h-24 w-full rounded-2xl border border-line bg-mist/50 p-4 text-sm leading-6 outline-none focus:ring-2 focus:ring-lime"
+          />
         </div>
 
         <div className="rounded-[2rem] bg-white p-5 shadow-sm">

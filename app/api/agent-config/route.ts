@@ -2,24 +2,25 @@ import { NextRequest, NextResponse } from "next/server";
 import { defaultAgentPrompt, defaultFirstMessage } from "@/lib/dental-demo-data";
 import { resolvePracticeMembership } from "@/lib/dental-auth";
 import { supabaseAdmin } from "@/lib/supabase";
+import {
+  type ClientEditable,
+  type FirstMessageTemplate,
+  type MiscInfo,
+  type TreatmentFacts,
+  emptyClientEditable,
+  factsFrom,
+  miscFrom,
+  parseClientEditable,
+  templateFrom,
+} from "@/lib/agent-editable";
 
 export const dynamic = "force-dynamic";
 
 /**
  * Client-editable subset stored inside agent_control_configs.workflow_settings.
  * The n8n worker reads these (via /api/runtime-config) so practice owners like
- * Asif can change persona/hours/knowledge without anyone editing the workflow.
+ * Asif can change persona/hours/knowledge/facts without editing the workflow.
  */
-type ClientEditable = {
-  assistantName: string;
-  openingHours: string;
-  closingHours: string;
-  knowledge: string;
-  // Per-treatment opening WhatsApp message, keyed by treatment id (e.g. "invisalign").
-  // The n8n worker overlays these onto the hardcoded treatment config.
-  treatmentFirstMessages: Record<string, string>;
-};
-
 type WorkflowSettings = Record<string, unknown> & {
   clientEditable?: Partial<ClientEditable>;
 };
@@ -49,32 +50,10 @@ type SupabaseResult<T> = {
 const SELECT_COLUMNS =
   "id, practice_id, version_number, is_active, first_message, prompt, tone, treatment_focus, safety_rules, workflow_settings, appointment_settings, auto_contact_enabled, launch_state, updated_at";
 
-const EMPTY_CLIENT_EDITABLE: ClientEditable = {
-  assistantName: "",
-  openingHours: "",
-  closingHours: "",
-  knowledge: "",
-  treatmentFirstMessages: {},
-};
-
-function treatmentMessagesFrom(raw: unknown): Record<string, string> {
-  if (!raw || typeof raw !== "object") return {};
-  const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
-    if (typeof value === "string") out[key] = value;
-  }
-  return out;
-}
+const EMPTY_CLIENT_EDITABLE: ClientEditable = emptyClientEditable();
 
 function clientEditableFrom(workflowSettings: WorkflowSettings | null): ClientEditable {
-  const raw = workflowSettings?.clientEditable ?? {};
-  return {
-    assistantName: typeof raw.assistantName === "string" ? raw.assistantName : "",
-    openingHours: typeof raw.openingHours === "string" ? raw.openingHours : "",
-    closingHours: typeof raw.closingHours === "string" ? raw.closingHours : "",
-    knowledge: typeof raw.knowledge === "string" ? raw.knowledge : "",
-    treatmentFirstMessages: treatmentMessagesFrom(raw.treatmentFirstMessages),
-  };
+  return parseClientEditable(workflowSettings?.clientEditable);
 }
 
 function serialize(row: ConfigRow) {
@@ -150,7 +129,11 @@ export async function POST(req: NextRequest) {
     openingHours?: string;
     closingHours?: string;
     knowledge?: string;
+    otherMenuItems?: string;
+    misc?: Partial<MiscInfo>;
     treatmentFirstMessages?: Record<string, string>;
+    treatmentTemplates?: Record<string, Partial<FirstMessageTemplate>>;
+    treatmentFacts?: Record<string, Partial<TreatmentFacts>>;
   };
 
   // Any member of the practice (admin or client) may self-edit their own agent.
@@ -183,14 +166,42 @@ export async function POST(req: NextRequest) {
 
   const versionNumber = (latest?.version_number ?? 0) + 1;
   const previousEditable = clientEditableFrom(latest?.workflow_settings ?? null);
+  const mapFacts = (raw?: Record<string, Partial<TreatmentFacts>>) => {
+    const out: Record<string, TreatmentFacts> = {};
+    for (const [key, value] of Object.entries(raw ?? {})) out[key] = factsFrom(value);
+    return out;
+  };
+  const mapTemplates = (raw?: Record<string, Partial<FirstMessageTemplate>>) => {
+    const out: Record<string, FirstMessageTemplate> = {};
+    for (const [key, value] of Object.entries(raw ?? {})) out[key] = templateFrom(value);
+    return out;
+  };
+  const stringMap = (raw?: Record<string, string>) => {
+    const out: Record<string, string> = {};
+    for (const [key, value] of Object.entries(raw ?? {})) {
+      if (typeof value === "string") out[key] = value;
+    }
+    return out;
+  };
+
   const nextEditable: ClientEditable = {
     assistantName: cleanString(body.assistantName, previousEditable.assistantName),
     openingHours: cleanString(body.openingHours, previousEditable.openingHours),
     closingHours: cleanString(body.closingHours, previousEditable.closingHours),
     knowledge: cleanString(body.knowledge, previousEditable.knowledge),
+    otherMenuItems: cleanString(body.otherMenuItems, previousEditable.otherMenuItems),
+    misc: body.misc ? miscFrom({ ...previousEditable.misc, ...body.misc }) : previousEditable.misc,
     treatmentFirstMessages: {
       ...previousEditable.treatmentFirstMessages,
-      ...treatmentMessagesFrom(body.treatmentFirstMessages),
+      ...stringMap(body.treatmentFirstMessages),
+    },
+    treatmentTemplates: {
+      ...previousEditable.treatmentTemplates,
+      ...mapTemplates(body.treatmentTemplates),
+    },
+    treatmentFacts: {
+      ...previousEditable.treatmentFacts,
+      ...mapFacts(body.treatmentFacts),
     },
   };
   const workflowSettings: WorkflowSettings = {
