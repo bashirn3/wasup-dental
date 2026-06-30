@@ -32,6 +32,13 @@ export default function SignInForm() {
   const [emailPlaceholder, setEmailPlaceholder] = useState(DESKTOP_EMAIL_PLACEHOLDER);
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("error") === "oauth_timeout") {
+      setError("Google sign-in didn't complete. Try again, or use your email and password below.");
+    }
+  }, []);
+
+  useEffect(() => {
     const media = window.matchMedia("(max-width: 899px)");
     const updatePlaceholder = () => {
       setEmailPlaceholder(media.matches ? MOBILE_EMAIL_PLACEHOLDER : DESKTOP_EMAIL_PLACEHOLDER);

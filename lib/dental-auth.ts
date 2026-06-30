@@ -56,6 +56,12 @@ function membership(practiceId: string, role: Role, email: string | null, isInte
   return { practiceId, role, email, isInternalAdmin };
 }
 
+/** Email of the currently signed-in Clerk user (lowercased), or null. */
+export async function getSignedInEmail(): Promise<string | null> {
+  const { email } = await currentIdentity();
+  return email;
+}
+
 export async function resolvePracticeMembership(
   requestedPracticeId?: string | null,
 ): Promise<PracticeMembership | null> {
