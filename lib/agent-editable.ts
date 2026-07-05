@@ -8,6 +8,7 @@
  */
 
 export const DENTAL_TREATMENTS = [
+  "general",
   "invisalign",
   "implants",
   "full_arch_implants",
@@ -20,6 +21,7 @@ export const DENTAL_TREATMENTS = [
 export type DentalTreatment = (typeof DENTAL_TREATMENTS)[number];
 
 export const TREATMENT_LABELS: Record<string, string> = {
+  general: "General",
   invisalign: "Invisalign",
   implants: "Dental Implants",
   full_arch_implants: "Full Arch Implants",
