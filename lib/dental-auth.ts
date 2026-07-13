@@ -62,6 +62,12 @@ export async function getSignedInEmail(): Promise<string | null> {
   return email;
 }
 
+export async function requireInternalAdmin(): Promise<{ email: string | null } | null> {
+  if (!clerkEnabled()) return { email: null };
+  const email = await getSignedInEmail();
+  return email && INTERNAL_ADMIN_EMAILS.has(email) ? { email } : null;
+}
+
 export async function resolvePracticeMembership(
   requestedPracticeId?: string | null,
 ): Promise<PracticeMembership | null> {

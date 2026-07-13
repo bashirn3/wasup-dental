@@ -22,6 +22,7 @@
 
 # misc
 .DS_Store
+.cache/
 *.pem
 post-signup.html
 app-rest.html
