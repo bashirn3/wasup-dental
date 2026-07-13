@@ -11,12 +11,14 @@ const clerkEnabled =
  * "/api/webhooks/*" and "/api/engine/*" (machine-to-machine, own secrets).
  */
 const isProtectedPage = createRouteMatcher([
+  "/admin(.*)",
   "/dashboard(.*)",
   "/agent(.*)",
   "/connect(.*)",
 ]);
 
 const isProtectedApi = createRouteMatcher([
+  "/api/admin(.*)",
   "/api/tenant(.*)",
   "/api/leads(.*)",
   "/api/settings(.*)",

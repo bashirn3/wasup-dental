@@ -32,6 +32,7 @@ export default function AccountMenu({ variant = "mobile", label, subLabel }: Pro
 
   const email = user?.primaryEmailAddress?.emailAddress?.toLowerCase() ?? "";
   const memberships = userMemberships?.data ?? [];
+  const isSuperadmin = SUPERADMIN_EMAILS.has(email);
   const canSwitchWorkspace = SUPERADMIN_EMAILS.has(email) && memberships.length > 1;
   const initial =
     user?.firstName?.charAt(0) ||
@@ -108,6 +109,19 @@ export default function AccountMenu({ variant = "mobile", label, subLabel }: Pro
               );
             })}
         </div>
+      )}
+      {isSuperadmin && (
+        <button
+          type="button"
+          className="acct-signout"
+          role="menuitem"
+          onClick={() => {
+            close();
+            window.location.assign("/admin/funnel");
+          }}
+        >
+          Attribution funnel
+        </button>
       )}
       <button type="button" className="acct-signout" role="menuitem" onClick={() => void signOutNow()}>
         Sign out
