@@ -759,7 +759,7 @@ function mapLead(practice: PracticeKey, practiceLabel: string, lead: V1Lead): Fu
 function sourceBreakdown(rows: FunnelLeadRow[]) {
   const map = new Map<string, { source: string; leads: number; replied: number; booked: number }>();
   for (const row of rows) {
-    const source = row.leadSource || "Unknown";
+    const source = displaySourceName(row.leadSource);
     const item = map.get(source) ?? { source, leads: 0, replied: 0, booked: 0 };
     item.leads += row.aiActioned ? 1 : 0;
     item.replied += row.clientReplied ? 1 : 0;
@@ -767,6 +767,32 @@ function sourceBreakdown(rows: FunnelLeadRow[]) {
     map.set(source, item);
   }
   return [...map.values()].sort((a, b) => b.leads - a.leads).slice(0, 8);
+}
+
+function displaySourceName(source: string | null | undefined): string {
+  const normalized = normalize(source || "");
+  if (!normalized) return "Unknown";
+  const aliases: Record<string, string> = {
+    "facebook lead ads": "Facebook Lead Ads",
+    "direct traffic": "Direct Traffic",
+    "google paid search": "Google Paid Search",
+    manual: "Manual",
+    whatsapp: "WhatsApp",
+    "whats app": "WhatsApp",
+    wa: "WhatsApp",
+    instagram: "Instagram",
+    "referred by a dentist": "Referred by a dentist",
+  };
+  return aliases[normalized] || titleCaseSource(source || "Unknown");
+}
+
+function titleCaseSource(source: string): string {
+  return source
+    .trim()
+    .replace(/\s+/g, " ")
+    .split(" ")
+    .map((part) => (part.length <= 2 ? part.toUpperCase() : part.charAt(0).toUpperCase() + part.slice(1).toLowerCase()))
+    .join(" ");
 }
 
 function withCache(
