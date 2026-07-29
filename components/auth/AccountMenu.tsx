@@ -13,6 +13,7 @@ type Props = {
 const SUPERADMIN_EMAILS = new Set([
   "bashir@tryrapidscreen.com",
   "arslan@tryrapidscreen.com",
+  "asif@smilefast.com",
 ]);
 
 /**

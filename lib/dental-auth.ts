@@ -27,9 +27,14 @@ export type PracticeMembership = {
   isInternalAdmin: boolean;
 };
 
+const DEFAULT_INTERNAL_ADMIN_EMAILS = [
+  "bashir@tryrapidscreen.com",
+  "arslan@tryrapidscreen.com",
+  "asif@smilefast.com",
+];
+
 const INTERNAL_ADMIN_EMAILS = new Set(
-  (process.env.INTERNAL_ADMIN_EMAILS ?? "bashir@tryrapidscreen.com,arslan@tryrapidscreen.com")
-    .split(",")
+  [...DEFAULT_INTERNAL_ADMIN_EMAILS, ...(process.env.INTERNAL_ADMIN_EMAILS ?? "").split(",")]
     .map((email) => email.trim().toLowerCase())
     .filter(Boolean),
 );
