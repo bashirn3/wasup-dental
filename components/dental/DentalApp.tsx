@@ -347,7 +347,7 @@ export default function DentalApp() {
   }
 
   return (
-    <main className="min-h-dvh bg-paper pb-24 text-ink md:pb-0">
+    <main className="min-h-dvh bg-paper pb-[calc(7.5rem+env(safe-area-inset-bottom))] text-ink md:pb-0">
       <div className="mx-auto flex min-h-dvh max-w-6xl flex-col px-4 pb-4 pt-5 sm:px-6 md:py-8">
         <header className="rounded-[2rem] bg-pine p-5 text-paper shadow-[0_20px_70px_-45px_rgba(8,34,22,0.8)] md:p-6">
           <div className="flex items-start justify-between gap-4">
@@ -530,7 +530,7 @@ export default function DentalApp() {
         />
       )}
 
-      <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-black/5 bg-white/95 px-3 pb-[max(env(safe-area-inset-bottom),0.5rem)] pt-2 shadow-2xl backdrop-blur md:hidden">
+      <nav className="fixed inset-x-0 bottom-0 z-30 min-h-[calc(5.75rem+env(safe-area-inset-bottom))] border-t border-black/5 bg-white/95 px-3 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] pt-2 shadow-2xl backdrop-blur md:hidden">
         <div className="grid grid-cols-6 gap-1">
           {tabs.map(([key, label, Icon]) => (
             <button
@@ -2430,7 +2430,7 @@ function AgentPanel({
         </div>
       </div>
 
-      <div className="lg:sticky lg:top-6 lg:self-start">
+      <div className="pb-[calc(6.75rem+env(safe-area-inset-bottom))] md:pb-0 lg:sticky lg:top-6 lg:self-start">
         <div className="rounded-[2rem] bg-white p-4 shadow-sm sm:p-5">
           <div className="mb-4 flex items-center justify-between">
             <div>
@@ -2449,7 +2449,7 @@ function AgentPanel({
           <p className="mb-4 rounded-2xl bg-mist px-4 py-3 text-xs leading-5 text-ink/55">
             Test only. Messages here are not sent to WhatsApp — use this to check tone and safety.
           </p>
-          <div className="flex h-[460px] flex-col overflow-hidden rounded-[1.5rem] border border-line bg-[#eee9e1]">
+          <div className="flex h-[min(460px,calc(100dvh-14rem))] flex-col overflow-hidden rounded-[1.5rem] border border-line bg-[#eee9e1] sm:h-[460px]">
             <div className="flex items-center gap-3 bg-pine px-4 py-3 text-paper">
               <span className="grid size-9 place-items-center rounded-full bg-white/15 text-sm font-bold text-lime">
                 {practiceName.charAt(0)}
