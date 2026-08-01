@@ -172,6 +172,7 @@ export const mockDentalDashboardData: DentalDashboardData = {
   practice: {
     id: "mock-practice",
     name: "Regent Dental",
+    externalId: "regent-boxly",
     websiteUrl: "https://regentdental.co.uk",
     location: "London",
     phone: "+442000000000",

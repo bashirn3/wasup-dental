@@ -83,6 +83,7 @@ export type DentalLead = {
 export type DentalPractice = {
   id: string;
   name: string;
+  externalId: string | null;
   websiteUrl: string | null;
   location: string | null;
   phone: string | null;

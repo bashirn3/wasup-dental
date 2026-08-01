@@ -60,6 +60,11 @@ const PAGE_SIZE = 50;
 const emptyFilters: LeadFilters = { q: "", status: "", box: "", stage: "" };
 const emptyActivityFilters: ActivityFilters = { q: "", status: "", box: "" };
 
+function hasTreatmentControls(practice: DentalDashboardData["practice"]) {
+  const externalId = practice?.externalId?.toLowerCase() ?? "";
+  return externalId === "regent-boxly" || externalId === "nuyu-boxly";
+}
+
 export default function DentalApp() {
   const [tab, setTab] = useState<TabKey>("dashboard");
   const [data, setData] = useState<DentalDashboardData | null>(null);
@@ -502,7 +507,7 @@ export default function DentalApp() {
             <BoxlyConfigPanel
               practiceId={data.practiceId ?? null}
               practiceName={data.practice?.name ?? "your practice"}
-              clientControls={(data.practice?.name ?? "").toLowerCase().includes("regent")}
+              clientControls={hasTreatmentControls(data.practice)}
             />
           )}
           {tab === "connect" && (

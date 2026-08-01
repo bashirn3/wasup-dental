@@ -19,6 +19,7 @@ type SupabaseResult<T> = {
 type PracticeRow = {
   id: string;
   name: string;
+  external_id: string | null;
   website_url: string | null;
   location: string | null;
   phone: string | null;
@@ -109,7 +110,7 @@ export async function getDentalDashboardData(
   const { data: practice } = (await supabase
     .from("practices")
     .select(
-      "id, name, website_url, location, phone, source_system, whatsapp_status, connected_number, wasup_instance_id",
+      "id, name, external_id, website_url, location, phone, source_system, whatsapp_status, connected_number, wasup_instance_id",
     )
     .eq("id", practiceId)
     .maybeSingle()) as SupabaseResult<PracticeRow>;
@@ -217,6 +218,7 @@ export async function getDentalDashboardData(
     practice: {
       id: practice.id,
       name: practice.name,
+      externalId: practice.external_id,
       websiteUrl: practice.website_url,
       location: practice.location,
       phone: practice.phone,
