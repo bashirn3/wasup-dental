@@ -54,7 +54,7 @@ export default function BoxlyConfigPanel({
   practiceId: string | null;
   practiceName: string;
   /** Per-treatment client controls (treatment pages, clinicians, deposits) only
-   *  exist for practices wired to Dentally — currently Regent. */
+   *  exist for practices wired to Dentally — currently Regent and NUYU. */
   clientControls?: boolean;
 }) {
   const [boxes, setBoxes] = useState<Box[]>([]);
