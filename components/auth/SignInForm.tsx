@@ -57,9 +57,13 @@ export default function SignInForm() {
     setError(clerkErrorMessage(err, fallback));
   }
 
-  async function finishSignIn() {
-    if (!signIn?.createdSessionId) return;
-    await setActive!({ session: signIn.createdSessionId });
+  async function finishSignIn(sessionId?: string | null) {
+    const nextSessionId = sessionId ?? signIn?.createdSessionId;
+    if (!nextSessionId) {
+      setError("Sign-in completed, but no session was returned. Please try again.");
+      return;
+    }
+    await setActive!({ session: nextSessionId });
     router.push(REDIRECT);
   }
 
@@ -70,17 +74,18 @@ export default function SignInForm() {
     setError("");
     setLoading(true);
     try {
-      await signIn.create({ identifier: email.trim() });
+      const signInAttempt = await signIn.create({ identifier: email.trim() });
 
-      if (signIn.status === "complete") {
-        await finishSignIn();
+      if (signInAttempt.status === "complete") {
+        await finishSignIn(signInAttempt.createdSessionId);
         return;
       }
 
-      const passwordFactor = signIn.supportedFirstFactors?.find(
+      const firstFactors = signInAttempt.supportedFirstFactors ?? signIn.supportedFirstFactors;
+      const passwordFactor = firstFactors?.find(
         (f) => f.strategy === "password",
       );
-      const emailCodeFactor = signIn.supportedFirstFactors?.find(
+      const emailCodeFactor = firstFactors?.find(
         (f) => f.strategy === "email_code",
       );
 
@@ -109,15 +114,16 @@ export default function SignInForm() {
     setError("");
     setLoading(true);
     try {
-      await signIn.attemptFirstFactor({ strategy: "password", password });
+      const signInAttempt = await signIn.attemptFirstFactor({ strategy: "password", password });
 
-      if (signIn.status === "complete") {
-        await finishSignIn();
+      if (signInAttempt.status === "complete") {
+        await finishSignIn(signInAttempt.createdSessionId);
         return;
       }
 
-      if (signIn.status === "needs_second_factor") {
-        const emailCode = signIn.supportedSecondFactors?.find(
+      if (signInAttempt.status === "needs_second_factor") {
+        const secondFactors = signInAttempt.supportedSecondFactors ?? signIn.supportedSecondFactors;
+        const emailCode = secondFactors?.find(
           (f) => f.strategy === "email_code",
         );
         if (emailCode && "emailAddressId" in emailCode) {
@@ -129,7 +135,10 @@ export default function SignInForm() {
         } else {
           setError("Additional verification is required.");
         }
+        return;
       }
+
+      setError("Sign-in could not complete. Please try another method or restart sign-in.");
     } catch (err) {
       await handleClerkError(err, "Incorrect password. Try again.");
     } finally {
@@ -145,15 +154,16 @@ export default function SignInForm() {
     setLoading(true);
     try {
       const strategy = step === "second_factor" ? "email_code" : "email_code";
-      if (step === "second_factor") {
-        await signIn.attemptSecondFactor({ strategy, code });
-      } else {
-        await signIn.attemptFirstFactor({ strategy, code });
+      const signInAttempt = step === "second_factor"
+        ? await signIn.attemptSecondFactor({ strategy, code })
+        : await signIn.attemptFirstFactor({ strategy, code });
+
+      if (signInAttempt.status === "complete") {
+        await finishSignIn(signInAttempt.createdSessionId);
+        return;
       }
 
-      if (signIn.status === "complete") {
-        await finishSignIn();
-      }
+      setError("Verification did not complete. Please request a new code and try again.");
     } catch (err) {
       await handleClerkError(err, "Invalid code. Try again.");
     } finally {
