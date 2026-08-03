@@ -30,6 +30,7 @@ export default function SignInForm() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [emailPlaceholder, setEmailPlaceholder] = useState(DESKTOP_EMAIL_PLACEHOLDER);
+  const [emailCodeFactorId, setEmailCodeFactorId] = useState<string | null>(null);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -67,6 +68,21 @@ export default function SignInForm() {
     router.push(REDIRECT);
   }
 
+  async function prepareEmailCodeSignIn(factorId = emailCodeFactorId) {
+    if (!signIn || !factorId) {
+      setError("Email code sign-in is not available for this account.");
+      return false;
+    }
+
+    await signIn.prepareFirstFactor({
+      strategy: "email_code",
+      emailAddressId: factorId,
+    });
+    setCode("");
+    setStep("email_code");
+    return true;
+  }
+
   async function handleIdentifier(e: React.FormEvent) {
     e.preventDefault();
     if (!isLoaded || !signIn) return;
@@ -88,15 +104,14 @@ export default function SignInForm() {
       const emailCodeFactor = firstFactors?.find(
         (f) => f.strategy === "email_code",
       );
+      const nextEmailCodeFactorId =
+        emailCodeFactor && "emailAddressId" in emailCodeFactor ? emailCodeFactor.emailAddressId : null;
+      setEmailCodeFactorId(nextEmailCodeFactorId);
 
       if (passwordFactor) {
         setStep("password");
-      } else if (emailCodeFactor && "emailAddressId" in emailCodeFactor) {
-        await signIn.prepareFirstFactor({
-          strategy: "email_code",
-          emailAddressId: emailCodeFactor.emailAddressId,
-        });
-        setStep("email_code");
+      } else if (nextEmailCodeFactorId) {
+        await prepareEmailCodeSignIn(nextEmailCodeFactorId);
       } else {
         setError("No sign-in method available for this email.");
       }
@@ -138,7 +153,16 @@ export default function SignInForm() {
         return;
       }
 
-      setError("Sign-in could not complete. Please try another method or restart sign-in.");
+      const fallbackFactors = signInAttempt.supportedFirstFactors ?? signIn.supportedFirstFactors;
+      const emailCode = fallbackFactors?.find((f) => f.strategy === "email_code");
+      const fallbackFactorId = emailCode && "emailAddressId" in emailCode ? emailCode.emailAddressId : emailCodeFactorId;
+      if (fallbackFactorId) {
+        setEmailCodeFactorId(fallbackFactorId);
+        await prepareEmailCodeSignIn(fallbackFactorId);
+        return;
+      }
+
+      setError(`Sign-in could not complete (${signInAttempt.status}). Please restart sign-in.`);
     } catch (err) {
       await handleClerkError(err, "Incorrect password. Try again.");
     } finally {
@@ -163,7 +187,7 @@ export default function SignInForm() {
         return;
       }
 
-      setError("Verification did not complete. Please request a new code and try again.");
+      setError(`Verification did not complete (${signInAttempt.status}). Please request a new code and try again.`);
     } catch (err) {
       await handleClerkError(err, "Invalid code. Try again.");
     } finally {
@@ -207,6 +231,16 @@ export default function SignInForm() {
             </>
           )}
         </button>
+        {emailCodeFactorId ? (
+          <button
+            className="rm-btn rm-btn-secondary"
+            type="button"
+            disabled={loading}
+            onClick={() => void prepareEmailCodeSignIn()}
+          >
+            Email me a code instead
+          </button>
+        ) : null}
         <button
           className="rm-btn rm-btn-ghost"
           type="button"
