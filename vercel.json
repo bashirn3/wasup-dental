@@ -7,6 +7,10 @@
     {
       "path": "/api/import/boxly/scheduled",
       "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/import/leadflo/scheduled",
+      "schedule": "*/5 * * * *"
     }
   ]
 }
