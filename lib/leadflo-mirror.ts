@@ -45,6 +45,8 @@ type FeederLead = {
   labels?: unknown;
   isTestName?: boolean | null;
   status?: string | null;
+  /** When the patient enquired, per their Leadflo timeline. Null until resolved. */
+  enquiredAt?: string | null;
   firstSeenAt?: string | null;
   lastSeenAt?: string | null;
   outboundStatus?: string | null;
@@ -349,6 +351,7 @@ function normalizeLead(row: FeederLead, practiceId: string, now: string) {
         feederStatus: row.status ?? null,
         outboundStatus: row.outboundStatus ?? null,
         outboundSentAt: row.outboundSentAt ?? null,
+        enquiredAt: row.enquiredAt ?? null,
         firstSeenAt: row.firstSeenAt ?? null,
         lastSeenAt: row.lastSeenAt ?? null,
         rawPhone: row.phone ?? null,
@@ -362,8 +365,10 @@ function normalizeLead(row: FeederLead, practiceId: string, now: string) {
     needs_human: false,
     last_synced_at: now,
     // updated_at drives the Leads list ordering, so it tracks when the enquiry
-    // arrived rather than when the scraper last touched the row.
-    updated_at: row.firstSeenAt ?? row.lastSeenAt ?? now,
+    // arrived rather than when the scraper last touched the row. enquiredAt is the
+    // real date; firstSeenAt only says when the feeder discovered the patient,
+    // which for the initial backfill was one afternoon for years of enquiries.
+    updated_at: row.enquiredAt ?? row.firstSeenAt ?? row.lastSeenAt ?? now,
   };
 }
 
