@@ -72,6 +72,8 @@ export type LeadfloMirrorResult = {
   skipped: number;
   withoutUsablePhone: number;
   sourceCount: number;
+  /** Repeated patient ids from the feeder, dropped so the batch can still land. */
+  duplicateExternalIds: string[];
 };
 
 export type LeadfloPreviewResult = {
@@ -84,6 +86,8 @@ export type LeadfloPreviewResult = {
   wouldUpdate: number;
   skipped: number;
   withoutUsablePhone: number;
+  /** Repeated patient ids from the feeder. A duplicate used to fail the whole batch. */
+  duplicateExternalIds: string[];
   treatments: Record<string, number>;
   stages: Record<string, number>;
   sample: Array<{
@@ -112,13 +116,16 @@ export async function previewLeadfloPractice(
 
   const now = new Date().toISOString();
   let skipped = 0;
-  const records = rows
+  const mapped = rows
     .map((row) => normalizeLead(row, practiceId, now))
     .filter((row): row is NonNullable<ReturnType<typeof normalizeLead>> => {
       if (row) return true;
       skipped += 1;
       return false;
     });
+
+  // Previewing the deduped set, so the counts match what a run would actually do.
+  const { unique: records, duplicates } = dedupeByExternalId(mapped);
 
   const existing = await loadExistingExternalIds(
     ours,
@@ -144,6 +151,7 @@ export async function previewLeadfloPractice(
     wouldUpdate: records.filter((record) => existing.has(record.external_id)).length,
     skipped,
     withoutUsablePhone: records.filter((record) => !record.phone).length,
+    duplicateExternalIds: duplicates,
     treatments,
     stages,
     sample: records.slice(0, 10).map((record) => ({
@@ -184,19 +192,23 @@ export async function mirrorLeadfloPractice(
   let leadsUpserted = 0;
   let skipped = 0;
   let sourceCount = 0;
+  let duplicateExternalIds: string[] = [];
 
   try {
     const rows = await fetchFeederLeads(settings, clampLimit(options.limit));
     sourceCount = rows.length;
 
     const now = new Date().toISOString();
-    const records = rows
+    const mapped = rows
       .map((row) => normalizeLead(row, practiceId, now))
       .filter((row): row is NonNullable<ReturnType<typeof normalizeLead>> => {
         if (row) return true;
         skipped += 1;
         return false;
       });
+
+    const { unique: records, duplicates } = dedupeByExternalId(mapped);
+    duplicateExternalIds = duplicates;
 
     for (let index = 0; index < records.length; index += 500) {
       const chunk = records.slice(index, index + 500);
@@ -216,6 +228,7 @@ export async function mirrorLeadfloPractice(
       inserted: leadsUpserted,
       skipped,
       errorMessage: null,
+      duplicateExternalIds,
     });
 
     return {
@@ -227,6 +240,7 @@ export async function mirrorLeadfloPractice(
       skipped,
       withoutUsablePhone: records.filter((record) => !record.phone).length,
       sourceCount,
+      duplicateExternalIds,
     };
   } catch (error) {
     await finishSync(ours, {
@@ -298,6 +312,29 @@ async function fetchFeederLeads(settings: LeadfloSettings, limit: number): Promi
   const body = (await response.json()) as { leads?: FeederLead[] };
   if (!Array.isArray(body.leads)) throw new Error("feeder_read_malformed");
   return body.leads;
+}
+
+/**
+ * Collapse repeated external_ids, keeping the last occurrence.
+ *
+ * Postgres rejects an entire upsert batch with a cardinality violation if one
+ * conflict key appears twice in it, so a single duplicated patient id stops the
+ * whole practice syncing — which is how the dashboard sat stale for over an
+ * hour. The feeder is the source of truth and later rows are the fresher read,
+ * so the duplicate is dropped rather than the batch.
+ */
+function dedupeByExternalId<T extends { external_id: string }>(
+  records: T[],
+): { unique: T[]; duplicates: string[] } {
+  const byId = new Map<string, T>();
+  const duplicates: string[] = [];
+
+  for (const record of records) {
+    if (byId.has(record.external_id)) duplicates.push(record.external_id);
+    byId.set(record.external_id, record);
+  }
+
+  return { unique: [...byId.values()], duplicates };
 }
 
 async function loadExistingExternalIds(
@@ -383,6 +420,7 @@ async function finishSync(
     inserted: number;
     skipped: number;
     errorMessage: string | null;
+    duplicateExternalIds?: string[];
   },
 ) {
   const finishedAt = new Date().toISOString();
@@ -406,6 +444,12 @@ async function finishSync(
             inserted_count: args.inserted,
             skipped_count: args.skipped,
             error_message: args.errorMessage,
+            // Recorded so a repeat is diagnosable from the sync history alone,
+            // rather than needing the feeder's full lead list to reproduce.
+            metadata: {
+              integrationId: args.integrationId,
+              duplicateExternalIds: args.duplicateExternalIds ?? [],
+            },
           })
           .eq("id", args.runId)
       : Promise.resolve(),
