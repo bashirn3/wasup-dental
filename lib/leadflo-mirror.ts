@@ -2,6 +2,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabase";
 import {
   syncLeadfloConversations,
+  type ConversationStat,
   type LeadfloConversationResult,
 } from "@/lib/leadflo-conversations";
 
@@ -122,6 +123,20 @@ export type LeadfloPreviewResult = {
 };
 
 const SOURCE_SYSTEM = "leadflo";
+
+/** A lead row as this module builds it for the dashboard. */
+type LeadRecord = NonNullable<ReturnType<typeof normalizeLead>>;
+
+/**
+ * The dashboard reads a lead's history out of external_payload, in a shape
+ * Boxly established: `legacy` for the lead's own history, `raw` for the source
+ * system's record, `summary` for the line shown beside them.
+ */
+type LeadPayload = {
+  legacy: Record<string, unknown>;
+  raw?: Record<string, unknown>;
+  summary?: string | null;
+};
 
 export async function previewLeadfloPractice(
   practiceId: string,
@@ -291,6 +306,8 @@ export async function mirrorLeadfloPractice(
         feederApiKey: process.env[settings.feederApiKeyEnv] ?? "",
         leads: talking,
       });
+
+      await describeConversations(ours, records, conversations.stats);
     } catch (conversationError) {
       conversationSkipped =
         conversationError instanceof Error
@@ -444,6 +461,51 @@ function dedupeByExternalId<T extends { external_id: string }>(
   return { unique: [...byId.values()], duplicates };
 }
 
+/**
+ * Write each thread's shape back onto its lead: how many turns it ran to,
+ * whether the patient ever answered, and what was last said.
+ *
+ * This is a second pass because the counts only exist once the messages have
+ * been read, and it touches only the handful of leads that have a conversation
+ * rather than re-writing the practice.
+ */
+async function describeConversations(
+  supabase: SupabaseClient,
+  records: LeadRecord[],
+  stats: ConversationStat[],
+) {
+  if (!stats.length) return;
+
+  const byExternalId = new Map(records.map((record) => [record.external_id, record]));
+  const described: LeadRecord[] = [];
+
+  for (const stat of stats) {
+    const record = byExternalId.get(stat.externalId);
+    if (!record || !stat.messages) continue;
+
+    described.push({
+      ...record,
+      external_payload: {
+        ...record.external_payload,
+        legacy: { ...record.external_payload.legacy, conversationCount: stat.messages },
+        // A reply is the strongest signal a lead is live, and the dashboard
+        // reads it from raw rather than legacy.
+        raw: { client_replied: stat.inbound > 0 },
+        // Shown in place of the stage on the activity row, so the list reads as
+        // a conversation rather than a column name.
+        summary: stat.lastBody,
+      },
+    });
+  }
+
+  if (!described.length) return;
+
+  const { error } = await supabase
+    .from("leads")
+    .upsert(described, { onConflict: "practice_id,source_system,external_id" });
+  if (error) throw new Error(`conversation_describe_failed:${error.code ?? error.message}`);
+}
+
 /** Leads we already hold, by Leadflo patient id, with what we currently say about them. */
 async function loadExistingLeads(
   supabase: SupabaseClient,
@@ -474,6 +536,36 @@ function normalizeLead(row: FeederLead, practiceId: string, now: string) {
   const fullName =
     row.fullName || [row.firstName, row.lastName].filter(Boolean).join(" ").trim() || null;
 
+  const external_payload: LeadPayload = {
+    // The dashboard reads a lead's history out of external_payload.legacy, a
+    // shape Boxly established. Leadflo's fields are named differently, so the
+    // equivalents are written under the names the dashboard already looks for;
+    // otherwise every count, chart and activity row reads zero for a patient
+    // Poppy has spoken to.
+    legacy: {
+      aiActioned: hasConversation(row),
+      actionedAt: contactedAt(row),
+      aiActionedAt: contactedAt(row),
+      becameLeadAt: row.enquiredAt ?? row.firstSeenAt ?? null,
+      lastUpdatedAt: row.lastSeenAt ?? null,
+      scrapedAt: row.lastSeenAt ?? null,
+
+      patientId: externalId,
+      stage: row.stage ?? null,
+      treatmentType: row.treatmentType ?? null,
+      dueDate: row.dueDate ?? null,
+      labels: row.labels ?? [],
+      isTestName: row.isTestName ?? false,
+      feederStatus: row.status ?? null,
+      outboundStatus: row.outboundStatus ?? null,
+      outboundSentAt: row.outboundSentAt ?? null,
+      enquiredAt: row.enquiredAt ?? null,
+      firstSeenAt: row.firstSeenAt ?? null,
+      lastSeenAt: row.lastSeenAt ?? null,
+      rawPhone: row.phone ?? null,
+    },
+  };
+
   return {
     practice_id: practiceId,
     name: fullName ?? "Unknown patient",
@@ -487,23 +579,7 @@ function normalizeLead(row: FeederLead, practiceId: string, now: string) {
     source: row.source ?? SOURCE_SYSTEM,
     source_system: SOURCE_SYSTEM,
     external_id: externalId,
-    external_payload: {
-      legacy: {
-        patientId: externalId,
-        stage: row.stage ?? null,
-        treatmentType: row.treatmentType ?? null,
-        dueDate: row.dueDate ?? null,
-        labels: row.labels ?? [],
-        isTestName: row.isTestName ?? false,
-        feederStatus: row.status ?? null,
-        outboundStatus: row.outboundStatus ?? null,
-        outboundSentAt: row.outboundSentAt ?? null,
-        enquiredAt: row.enquiredAt ?? null,
-        firstSeenAt: row.firstSeenAt ?? null,
-        lastSeenAt: row.lastSeenAt ?? null,
-        rawPhone: row.phone ?? null,
-      },
-    },
+    external_payload,
     // box_name/box_stage are what the dashboard UI reads for the pipeline
     // columns. Leadflo's equivalents are the treatment enquired about and the
     // CRM stage.
@@ -526,6 +602,12 @@ function normalizeLead(row: FeederLead, practiceId: string, now: string) {
  */
 function hasConversation(row: FeederLead) {
   return row.outboundStatus === "sent" || Boolean(row.noteWrittenAt) || Boolean(row.aiNote);
+}
+
+/** When Poppy first reached the patient, as well as the feeder can say. */
+function contactedAt(row: FeederLead) {
+  if (!hasConversation(row)) return null;
+  return row.outboundSentAt ?? row.noteWrittenAt ?? null;
 }
 
 const STATUS_RANK: Record<string, number> = { new: 0, engaged: 1, booked: 2 };
@@ -621,7 +703,11 @@ async function finishSync(
             metadata: {
               integrationId: args.integrationId,
               duplicateExternalIds: args.duplicateExternalIds ?? [],
-              conversations: args.conversations ?? null,
+              // Counts only. The per-lead stats carry what was last said, and a
+              // sync log is no place to keep a copy of a patient's conversation.
+              conversations: args.conversations
+                ? { ...args.conversations, stats: args.conversations.stats.length }
+                : null,
               conversationSkipped: args.conversationSkipped ?? null,
               bookingSkipped: args.bookingSkipped ?? null,
             },

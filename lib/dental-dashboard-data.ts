@@ -166,11 +166,14 @@ export async function getDentalDashboardData(
       .from("leads")
       .select("id", { count: "exact", head: true })
       .eq("practice_id", practiceId),
+    // Actioned means we reached them, which a booked patient plainly is. Counting
+    // only "engaged" reported nobody as actioned the moment a conversation
+    // succeeded, which is the opposite of what the number is for.
     supabase
       .from("leads")
       .select("id", { count: "exact", head: true })
       .eq("practice_id", practiceId)
-      .eq("status", "engaged"),
+      .in("status", ["engaged", "booked"]),
     supabase
       .from("leads")
       .select("id", { count: "exact", head: true })
@@ -805,7 +808,11 @@ function extractLeadMeta(row: { status?: string | null; external_payload?: JsonR
   const raw = recordValue(payload.raw);
   const linkedLeads = Array.isArray(raw.linked_leads) ? raw.linked_leads : [];
   const firstLinkedLead = recordValue(linkedLeads.find((item) => isRecord(item)));
-  const aiActioned = boolValue(legacy.aiActioned) || boolValue(legacy.ai_actioned) || row.status === "engaged";
+  const aiActioned =
+    boolValue(legacy.aiActioned) ||
+    boolValue(legacy.ai_actioned) ||
+    row.status === "engaged" ||
+    row.status === "booked";
   const actioned =
     boolValue(legacy.actioned) ||
     Boolean(stringValue(legacy.actionedAt) ?? stringValue(legacy.actioned_at)) ||
