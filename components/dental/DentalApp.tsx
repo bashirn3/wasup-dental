@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import {
   Bar,
@@ -57,6 +57,7 @@ const tabs: [TabKey, string, typeof MIcon.users][] = [
 const CLERK_ON = Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY);
 const ACTIVE_WORKSPACE_KEY = "wasup-dental-active-workspace";
 const PAGE_SIZE = 50;
+const SEARCH_DEBOUNCE_MS = 300;
 const emptyFilters: LeadFilters = { q: "", status: "", box: "", stage: "" };
 const emptyActivityFilters: ActivityFilters = { q: "", status: "", box: "" };
 
@@ -68,7 +69,11 @@ function hasTreatmentControls(practice: DentalDashboardData["practice"]) {
 export default function DentalApp() {
   const [tab, setTab] = useState<TabKey>("dashboard");
   const [data, setData] = useState<DentalDashboardData | null>(null);
-  const [loading, setLoading] = useState(true);
+  // Only the very first load blanks the screen. Later loads keep the current
+  // rows up while they run, because replacing the whole app with a skeleton
+  // unmounts the search box the user is typing into.
+  const [refreshing, setRefreshing] = useState(true);
+  const inFlight = useRef<AbortController | null>(null);
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
   const [provisioning, setProvisioning] = useState(false);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
@@ -86,6 +91,10 @@ export default function DentalApp() {
   const [configVersion, setConfigVersion] = useState<number | null>(null);
   const [confirmSave, setConfirmSave] = useState(false);
   const [leadFilters, setLeadFilters] = useState<LeadFilters>(emptyFilters);
+  // What the inputs show updates on every keystroke; what we fetch lags behind it
+  // by SEARCH_DEBOUNCE_MS, so typing a name is one request rather than one per
+  // letter.
+  const [queryFilters, setQueryFilters] = useState<LeadFilters>(emptyFilters);
   const [page, setPage] = useState(1);
   const [savedSnapshot, setSavedSnapshot] = useState({
     firstMessage: defaultFirstMessage,
@@ -109,34 +118,57 @@ export default function DentalApp() {
 
   const load = useCallback(async () => {
     const offset = (page - 1) * PAGE_SIZE;
+    // Searches are cheap to start and slow to finish, so without this an early
+    // "a" can land after "asif" and put the wrong rows on screen.
+    inFlight.current?.abort();
+    const request = new AbortController();
+    inFlight.current = request;
+
+    setRefreshing(true);
     try {
       const params = new URLSearchParams({
         limit: String(PAGE_SIZE),
         offset: String(offset),
       });
       if (activePracticeId) params.set("practiceId", activePracticeId);
-      if (leadFilters.q.trim()) params.set("q", leadFilters.q.trim());
-      if (leadFilters.status) params.set("status", leadFilters.status);
-      if (leadFilters.box) params.set("box", leadFilters.box);
-      if (leadFilters.stage) params.set("stage", leadFilters.stage);
+      if (queryFilters.q.trim()) params.set("q", queryFilters.q.trim());
+      if (queryFilters.status) params.set("status", queryFilters.status);
+      if (queryFilters.box) params.set("box", queryFilters.box);
+      if (queryFilters.stage) params.set("stage", queryFilters.stage);
 
-      const res = await fetch(`/api/dashboard-data?${params.toString()}`, { cache: "no-store" });
+      const res = await fetch(`/api/dashboard-data?${params.toString()}`, {
+        cache: "no-store",
+        signal: request.signal,
+      });
       const payload = await res.json();
       setData(payload);
       if (payload.practiceId && payload.practiceId !== activePracticeId) {
         setActivePracticeId(payload.practiceId);
         window.localStorage.setItem(ACTIVE_WORKSPACE_KEY, payload.practiceId);
       }
+    } catch (error) {
+      // An abort means a newer search replaced this one, which is the system
+      // working. Anything else leaves the rows we already have on screen.
+      if ((error as Error)?.name !== "AbortError") console.error(error);
+      return;
     } finally {
-      setLoading(false);
+      if (inFlight.current === request) {
+        inFlight.current = null;
+        setRefreshing(false);
+      }
     }
-  }, [activePracticeId, leadFilters, page]);
+  }, [activePracticeId, queryFilters, page]);
 
   useEffect(() => {
     void load();
     const timer = window.setInterval(() => void load(), 30_000);
     return () => window.clearInterval(timer);
   }, [load]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setQueryFilters(leadFilters), SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [leadFilters]);
 
   const loadConfig = useCallback(async () => {
       const params = new URLSearchParams();
@@ -309,7 +341,7 @@ export default function DentalApp() {
     }
   }
 
-  if (loading || !data) {
+  if (!data) {
     return (
       <main className="min-h-dvh bg-paper px-5 py-6">
         <div className="mx-auto max-w-6xl animate-pulse space-y-4">
@@ -376,9 +408,12 @@ export default function DentalApp() {
                     setActivePracticeId(next);
                     setSelectedLeadId(null);
                     setLeadFilters(emptyFilters);
+                    setQueryFilters(emptyFilters);
                     setPage(1);
                     window.localStorage.setItem(ACTIVE_WORKSPACE_KEY, next);
-                    setLoading(true);
+                    // A different practice is a different dashboard, so here the
+                    // skeleton is honest rather than a flash of the wrong data.
+                    setData(null);
                   }}
                   className="hidden rounded-full border border-white/15 bg-white/10 px-3 py-2 text-sm font-semibold text-paper outline-none transition hover:bg-white/15 sm:block"
                   aria-label="Switch practice"
@@ -437,16 +472,15 @@ export default function DentalApp() {
               filters={leadFilters}
               page={page}
               pageSize={PAGE_SIZE}
+              refreshing={refreshing}
               onPageChange={(next) => {
                 setSelectedLeadId(null);
                 setPage(next);
-                setLoading(true);
               }}
               onFiltersChange={(filters) => {
                 setSelectedLeadId(null);
                 setLeadFilters(filters);
                 setPage(1);
-                setLoading(true);
               }}
               onSelect={setSelectedLeadId}
             />
@@ -564,6 +598,7 @@ function LeadsPanel({
   filters,
   page,
   pageSize,
+  refreshing,
   onPageChange,
   onFiltersChange,
   onSelect,
@@ -576,6 +611,7 @@ function LeadsPanel({
   filters: LeadFilters;
   page: number;
   pageSize: number;
+  refreshing: boolean;
   onPageChange: (page: number) => void;
   onFiltersChange: (filters: LeadFilters) => void;
   onSelect: (id: string) => void;
@@ -594,6 +630,7 @@ function LeadsPanel({
             <p className="mt-1 text-xs text-ink/35">
               {(filtered ? filteredTotal : totalLeads).toLocaleString()} leads
               {filtered ? ` filtered from ${totalLeads.toLocaleString()} total.` : "."}
+              {refreshing && <span className="ml-2 text-ink/30">Updating…</span>}
             </p>
           </div>
           {(filters.q || filters.status || filters.box || filters.stage) && (
