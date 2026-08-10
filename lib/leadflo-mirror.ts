@@ -1,5 +1,9 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabase";
+import {
+  syncLeadfloConversations,
+  type LeadfloConversationResult,
+} from "@/lib/leadflo-conversations";
 
 /**
  * Leadflo lead mirror.
@@ -51,11 +55,22 @@ type FeederLead = {
   lastSeenAt?: string | null;
   outboundStatus?: string | null;
   outboundSentAt?: string | null;
+  /** Set once WF-2 has written a conversation turn back to Leadflo. */
+  noteWrittenAt?: string | null;
+  aiNote?: string | null;
 };
 
 type LeadfloSettings = {
   feederBaseUrl: string;
   feederApiKeyEnv: string;
+  /**
+   * Where a paid deposit turns into a Dentally appointment. That state lives in
+   * the workflow's own table rather than in Leadflo, so without it the mirror
+   * cannot tell a booked patient from one who is still talking.
+   */
+  bookingSupabaseUrlEnv: string;
+  bookingSupabaseServiceRoleKeyEnv: string;
+  bookingTable: string;
 };
 
 export type LeadfloMirrorOptions = {
@@ -74,6 +89,11 @@ export type LeadfloMirrorResult = {
   sourceCount: number;
   /** Repeated patient ids from the feeder, dropped so the batch can still land. */
   duplicateExternalIds: string[];
+  /** Null when the conversation pass could not run; the lead mirror still did. */
+  conversations: LeadfloConversationResult | null;
+  conversationSkipped: string | null;
+  /** Set when booked leads could not be identified this run. */
+  bookingSkipped: string | null;
 };
 
 export type LeadfloPreviewResult = {
@@ -127,7 +147,7 @@ export async function previewLeadfloPractice(
   // Previewing the deduped set, so the counts match what a run would actually do.
   const { unique: records, duplicates } = dedupeByExternalId(mapped);
 
-  const existing = await loadExistingExternalIds(
+  const existing = await loadExistingLeads(
     ours,
     practiceId,
     records.map((record) => record.external_id),
@@ -193,6 +213,9 @@ export async function mirrorLeadfloPractice(
   let skipped = 0;
   let sourceCount = 0;
   let duplicateExternalIds: string[] = [];
+  let conversations: LeadfloConversationResult | null = null;
+  let conversationSkipped: string | null = null;
+  let bookingSkipped: string | null = null;
 
   try {
     const rows = await fetchFeederLeads(settings, clampLimit(options.limit));
@@ -210,13 +233,69 @@ export async function mirrorLeadfloPractice(
     const { unique: records, duplicates } = dedupeByExternalId(mapped);
     duplicateExternalIds = duplicates;
 
+    const existing = await loadExistingLeads(
+      ours,
+      practiceId,
+      records.map((record) => record.external_id),
+    );
+
+    // Knowing who is booked is an enrichment, not the job. If the booking table
+    // cannot be read the leads still mirror; they just stay at "engaged", and
+    // the reason is recorded on the run rather than thrown away.
+    let booked = new Set<string>();
+    try {
+      booked = await loadBookedNumbers(settings);
+    } catch (bookingError) {
+      bookingSkipped =
+        bookingError instanceof Error ? bookingError.message : String(bookingError);
+    }
+
+    for (const record of records) {
+      const digits = digitsOf(record.phone);
+      const derived = digits && booked.has(digits) ? "booked" : record.status;
+      record.status = resolveStatus(derived, existing.get(record.external_id)?.status);
+    }
+
+    const leadIds = new Map(
+      [...existing].map(([externalId, lead]) => [externalId, lead.id] as const),
+    );
+
     for (let index = 0; index < records.length; index += 500) {
       const chunk = records.slice(index, index + 500);
-      const { error } = await ours
+      const { data, error } = (await ours
         .from("leads")
-        .upsert(chunk, { onConflict: "practice_id,source_system,external_id" });
+        .upsert(chunk, { onConflict: "practice_id,source_system,external_id" })
+        .select("id, external_id")) as SupabaseResult<
+        Array<{ id: string; external_id: string }>
+      >;
       if (error) throw new Error(`lead_upsert_failed:${error.code ?? error.message}`);
+      for (const row of data ?? []) leadIds.set(row.external_id, row.id);
       leadsUpserted += chunk.length;
+    }
+
+    // Conversations are a separate, chattier job than the lead rows, and one
+    // unreadable timeline must not cost us the mirror. The enquiry-date backfill
+    // taught us that the hard way: an optional enrichment step took the whole
+    // poll down with it.
+    try {
+      const talking = rows
+        .filter((row) => row.patientId && hasConversation(row))
+        .map((row) => ({ externalId: row.patientId as string }))
+        .filter((lead) => leadIds.has(lead.externalId))
+        .map((lead) => ({ externalId: lead.externalId, leadId: leadIds.get(lead.externalId)! }));
+
+      conversations = await syncLeadfloConversations({
+        supabase: ours,
+        practiceId,
+        feederBaseUrl: settings.feederBaseUrl,
+        feederApiKey: process.env[settings.feederApiKeyEnv] ?? "",
+        leads: talking,
+      });
+    } catch (conversationError) {
+      conversationSkipped =
+        conversationError instanceof Error
+          ? conversationError.message
+          : String(conversationError);
     }
 
     await finishSync(ours, {
@@ -229,6 +308,9 @@ export async function mirrorLeadfloPractice(
       skipped,
       errorMessage: null,
       duplicateExternalIds,
+      conversations,
+      conversationSkipped,
+      bookingSkipped,
     });
 
     return {
@@ -241,6 +323,9 @@ export async function mirrorLeadfloPractice(
       withoutUsablePhone: records.filter((record) => !record.phone).length,
       sourceCount,
       duplicateExternalIds,
+      conversations,
+      conversationSkipped,
+      bookingSkipped,
     };
   } catch (error) {
     await finishSync(ours, {
@@ -278,17 +363,39 @@ async function loadIntegration(
 }
 
 function normalizeSettings(settings: Record<string, unknown> | null): LeadfloSettings {
-  const feederBaseUrl =
-    typeof settings?.feederBaseUrl === "string" ? settings.feederBaseUrl.replace(/\/$/, "") : "";
-  const feederApiKeyEnv =
-    typeof settings?.feederApiKeyEnv === "string" ? settings.feederApiKeyEnv : "";
+  const text = (key: string) => (typeof settings?.[key] === "string" ? (settings[key] as string) : "");
+
+  const feederBaseUrl = text("feederBaseUrl").replace(/\/$/, "");
+  const feederApiKeyEnv = text("feederApiKeyEnv");
 
   if (!/^https:\/\/[a-z0-9.-]+(\/.*)?$/i.test(feederBaseUrl)) {
     throw new Error("invalid_feeder_base_url");
   }
   if (!/^[A-Z0-9_]+$/.test(feederApiKeyEnv)) throw new Error("invalid_feeder_key_env");
 
-  return { feederBaseUrl, feederApiKeyEnv };
+  // The booking source is optional: a practice without one still mirrors, it
+  // just never reports a lead as booked.
+  const bookingSupabaseUrlEnv = text("bookingSupabaseUrlEnv");
+  const bookingSupabaseServiceRoleKeyEnv = text("bookingSupabaseServiceRoleKeyEnv");
+  const bookingTable = text("bookingTable");
+  const bookingConfigured =
+    bookingSupabaseUrlEnv || bookingSupabaseServiceRoleKeyEnv || bookingTable;
+
+  if (bookingConfigured) {
+    if (!/^[A-Z0-9_]+$/.test(bookingSupabaseUrlEnv)) throw new Error("invalid_booking_url_env");
+    if (!/^[A-Z0-9_]+$/.test(bookingSupabaseServiceRoleKeyEnv)) {
+      throw new Error("invalid_booking_key_env");
+    }
+    if (!/^[a-z0-9_]+$/.test(bookingTable)) throw new Error("invalid_booking_table");
+  }
+
+  return {
+    feederBaseUrl,
+    feederApiKeyEnv,
+    bookingSupabaseUrlEnv,
+    bookingSupabaseServiceRoleKeyEnv,
+    bookingTable,
+  };
 }
 
 /**
@@ -337,22 +444,25 @@ function dedupeByExternalId<T extends { external_id: string }>(
   return { unique: [...byId.values()], duplicates };
 }
 
-async function loadExistingExternalIds(
+/** Leads we already hold, by Leadflo patient id, with what we currently say about them. */
+async function loadExistingLeads(
   supabase: SupabaseClient,
   practiceId: string,
   externalIds: string[],
-): Promise<Set<string>> {
-  const found = new Set<string>();
+): Promise<Map<string, { id: string; status: string | null }>> {
+  const found = new Map<string, { id: string; status: string | null }>();
   for (let index = 0; index < externalIds.length; index += 200) {
     const chunk = externalIds.slice(index, index + 200);
     const { data, error } = (await supabase
       .from("leads")
-      .select("external_id")
+      .select("id, external_id, status")
       .eq("practice_id", practiceId)
       .eq("source_system", SOURCE_SYSTEM)
-      .in("external_id", chunk)) as SupabaseResult<Array<{ external_id: string }>>;
+      .in("external_id", chunk)) as SupabaseResult<
+      Array<{ id: string; external_id: string; status: string | null }>
+    >;
     if (error) throw new Error(`lead_lookup_failed:${error.code ?? error.message}`);
-    for (const row of data ?? []) found.add(row.external_id);
+    for (const row of data ?? []) found.set(row.external_id, { id: row.id, status: row.status });
   }
   return found;
 }
@@ -373,7 +483,7 @@ function normalizeLead(row: FeederLead, practiceId: string, now: string) {
     phone: row.phoneE164 ?? null,
     email: row.email ?? null,
     treatment: treatmentFromLeadflo(row.treatmentType),
-    status: row.outboundStatus === "sent" ? "engaged" : "new",
+    status: hasConversation(row) ? "engaged" : "new",
     source: row.source ?? SOURCE_SYSTEM,
     source_system: SOURCE_SYSTEM,
     external_id: externalId,
@@ -409,6 +519,65 @@ function normalizeLead(row: FeederLead, practiceId: string, now: string) {
   };
 }
 
+/**
+ * Whether Poppy and this patient have spoken. Any of the three is enough: the
+ * outbound flag can be cleared by a demo reset, but a written note is proof the
+ * conversation happened.
+ */
+function hasConversation(row: FeederLead) {
+  return row.outboundStatus === "sent" || Boolean(row.noteWrittenAt) || Boolean(row.aiNote);
+}
+
+const STATUS_RANK: Record<string, number> = { new: 0, engaged: 1, booked: 2 };
+
+/**
+ * Merge what this run worked out with what is already stored, never going
+ * backwards. Clearing a lead's outbound flag to re-run a demo does not unmake
+ * the conversation, and demoting them to "new" is what dropped them out of the
+ * Activity tab. A status we do not recognise was set by hand, so it is left be.
+ */
+function resolveStatus(derived: string, stored: string | null | undefined) {
+  if (!stored) return derived;
+  const storedRank = STATUS_RANK[stored];
+  if (storedRank === undefined) return stored;
+  return storedRank > (STATUS_RANK[derived] ?? 0) ? stored : derived;
+}
+
+/**
+ * Phone numbers with a Dentally appointment against them, as digits.
+ *
+ * A deposit that was paid but failed to book is deliberately not counted: the
+ * appointment id is the only evidence the patient actually has a slot.
+ */
+async function loadBookedNumbers(settings: LeadfloSettings): Promise<Set<string>> {
+  if (!settings.bookingTable) return new Set();
+
+  const url = process.env[settings.bookingSupabaseUrlEnv];
+  const key = process.env[settings.bookingSupabaseServiceRoleKeyEnv];
+  if (!url || !key) throw new Error(`booking_source_env_missing:${settings.bookingSupabaseUrlEnv}`);
+
+  const bookings = createClient(url, key, { auth: { persistSession: false } });
+  const { data, error } = (await bookings
+    .from(settings.bookingTable)
+    .select("number, dentally_appointment_id")
+    .not("dentally_appointment_id", "is", null)) as SupabaseResult<
+    Array<{ number: string | null }>
+  >;
+  if (error) throw new Error(`booking_lookup_failed:${error.code ?? error.message}`);
+
+  const numbers = new Set<string>();
+  for (const row of data ?? []) {
+    const digits = digitsOf(row.number);
+    if (digits) numbers.add(digits);
+  }
+  return numbers;
+}
+
+/** Numbers are stored E.164 here and bare in the booking table, so compare digits. */
+function digitsOf(value: string | null | undefined) {
+  return (value ?? "").replace(/\D/g, "");
+}
+
 async function finishSync(
   supabase: SupabaseClient,
   args: {
@@ -421,6 +590,9 @@ async function finishSync(
     skipped: number;
     errorMessage: string | null;
     duplicateExternalIds?: string[];
+    conversations?: LeadfloConversationResult | null;
+    conversationSkipped?: string | null;
+    bookingSkipped?: string | null;
   },
 ) {
   const finishedAt = new Date().toISOString();
@@ -449,6 +621,9 @@ async function finishSync(
             metadata: {
               integrationId: args.integrationId,
               duplicateExternalIds: args.duplicateExternalIds ?? [],
+              conversations: args.conversations ?? null,
+              conversationSkipped: args.conversationSkipped ?? null,
+              bookingSkipped: args.bookingSkipped ?? null,
             },
           })
           .eq("id", args.runId)
