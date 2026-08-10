@@ -38,12 +38,27 @@ export type ConversationLead = {
   leadId: string;
 };
 
+/**
+ * What a lead's thread amounts to, for the counts and summaries the dashboard
+ * shows beside them. Taken from the whole timeline rather than the rows just
+ * inserted, so it stays right on a run that had nothing new to store.
+ */
+export type ConversationStat = {
+  externalId: string;
+  messages: number;
+  /** Turns from the patient. None means we talked and they never answered. */
+  inbound: number;
+  lastAt: string | null;
+  lastBody: string | null;
+};
+
 export type LeadfloConversationResult = {
   leadsScanned: number;
   notesSeen: number;
   messagesInserted: number;
   /** Leads whose timeline could not be read. One failure must not stop the rest. */
   failures: Array<{ externalId: string; error: string }>;
+  stats: ConversationStat[];
 };
 
 const SOURCE_SYSTEM = "leadflo";
@@ -78,6 +93,7 @@ export async function syncLeadfloConversations(args: {
     notesSeen: 0,
     messagesInserted: 0,
     failures: [],
+    stats: [],
   };
 
   for (const lead of scope) {
@@ -91,7 +107,18 @@ export async function syncLeadfloConversations(args: {
       if (!rows.length) continue;
 
       // Leadflo has been seen to repeat an id within a single timeline.
-      const deduped = [...new Map(rows.map((row) => [row.external_id, row])).values()];
+      const deduped = [...new Map(rows.map((row) => [row.external_id, row])).values()].sort((a, b) =>
+        a.created_at.localeCompare(b.created_at),
+      );
+
+      const latest = deduped.at(-1) ?? null;
+      result.stats.push({
+        externalId: lead.externalId,
+        messages: deduped.length,
+        inbound: deduped.filter((row) => row.direction === "inbound").length,
+        lastAt: latest?.created_at ?? null,
+        lastBody: latest?.body ?? null,
+      });
 
       // Insert what is new rather than upserting the lot. A note never changes
       // once written, and the unique index on messages is a partial one, which
