@@ -621,8 +621,25 @@ function mapIntegration(row: IntegrationRow): DentalIntegration {
     status: normalizeIntegrationStatus(row.status),
     mode: row.mode === "hybrid" || row.mode === "native" || row.mode === "legacy_mirror" ? row.mode : "disabled",
     lastSyncedAt: row.last_synced_at,
-    healthLabel: row.last_synced_at ? `Synced ${relativeTime(row.last_synced_at)}` : "Not synced",
+    healthLabel: healthLabelFor(row.source_system, row.last_synced_at),
   };
+}
+
+/**
+ * What a connection's last activity should be called.
+ *
+ * A lead source is synced, but Dentally and Stripe are not: nothing is copied
+ * from them, they are asked to book an appointment or take a payment. Their time
+ * is the last one that worked, so it is named for what happened.
+ */
+function healthLabelFor(sourceSystem: string, lastSyncedAt: string | null) {
+  if (sourceSystem === "dentally") {
+    return lastSyncedAt ? `Last booking ${relativeTime(lastSyncedAt)}` : "No bookings yet";
+  }
+  if (sourceSystem === "stripe") {
+    return lastSyncedAt ? `Last deposit ${relativeTime(lastSyncedAt)}` : "No deposits yet";
+  }
+  return lastSyncedAt ? `Synced ${relativeTime(lastSyncedAt)}` : "Not synced";
 }
 
 function mapWorkflow(row: WorkflowRow): DentalWorkflow {
