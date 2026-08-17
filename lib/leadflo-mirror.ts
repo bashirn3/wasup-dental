@@ -4,6 +4,7 @@ import {
   syncLeadfloConversations,
   type ConversationStat,
   type LeadfloConversationResult,
+  type LeadOpener,
 } from "@/lib/leadflo-conversations";
 
 /**
@@ -56,6 +57,8 @@ type FeederLead = {
   lastSeenAt?: string | null;
   outboundStatus?: string | null;
   outboundSentAt?: string | null;
+  /** What WF-1 actually said. The feeder keeps the text of the latest send. */
+  outboundMessage?: string | null;
   /** Set once WF-2 has written a conversation turn back to Leadflo. */
   noteWrittenAt?: string | null;
   aiNote?: string | null;
@@ -259,7 +262,9 @@ export async function mirrorLeadfloPractice(
     // the reason is recorded on the run rather than thrown away.
     let booked = new Set<string>();
     try {
-      booked = await loadBookedNumbers(settings);
+      const evidence = await loadBookingEvidence(settings);
+      booked = evidence.numbers;
+      await recordBookingEvidence(ours, practiceId, evidence);
     } catch (bookingError) {
       bookingSkipped =
         bookingError instanceof Error ? bookingError.message : String(bookingError);
@@ -295,9 +300,12 @@ export async function mirrorLeadfloPractice(
     try {
       const talking = rows
         .filter((row) => row.patientId && hasConversation(row))
-        .map((row) => ({ externalId: row.patientId as string }))
-        .filter((lead) => leadIds.has(lead.externalId))
-        .map((lead) => ({ externalId: lead.externalId, leadId: leadIds.get(lead.externalId)! }));
+        .filter((row) => leadIds.has(row.patientId as string))
+        .map((row) => ({
+          externalId: row.patientId as string,
+          leadId: leadIds.get(row.patientId as string)!,
+          opener: openerOf(row),
+        }));
 
       conversations = await syncLeadfloConversations({
         supabase: ours,
@@ -625,6 +633,19 @@ function hasConversation(row: FeederLead) {
   return row.outboundStatus === "sent" || Boolean(row.noteWrittenAt) || Boolean(row.aiNote);
 }
 
+/**
+ * The message WF-1 opened with, where the feeder recorded one.
+ *
+ * Both the text and the send time have to be there. An opener with no time would
+ * land at the moment of import, which puts Poppy's first words after the
+ * patient's reply and reads worse than leaving it out.
+ */
+function openerOf(row: FeederLead): LeadOpener | null {
+  if (row.outboundStatus !== "sent") return null;
+  if (!row.outboundMessage || !row.outboundSentAt) return null;
+  return { body: row.outboundMessage, sentAt: row.outboundSentAt };
+}
+
 /** When Poppy first reached the patient, as well as the feeder can say. */
 function contactedAt(row: FeederLead) {
   if (!hasConversation(row)) return null;
@@ -646,14 +667,30 @@ function resolveStatus(derived: string, stored: string | null | undefined) {
   return storedRank > (STATUS_RANK[derived] ?? 0) ? stored : derived;
 }
 
+type BookingEvidence = {
+  /**
+   * Phone numbers with a Dentally appointment against them, as digits.
+   *
+   * A deposit that was paid but failed to book is deliberately not counted: the
+   * appointment id is the only evidence the patient actually has a slot.
+   */
+  numbers: Set<string>;
+  /** When Stripe last took a deposit. */
+  lastDepositAt: string | null;
+  /** When a deposit last became an appointment. */
+  lastBookingAt: string | null;
+};
+
 /**
- * Phone numbers with a Dentally appointment against them, as digits.
+ * What the booking table can prove about Dentally and Stripe.
  *
- * A deposit that was paid but failed to book is deliberately not counted: the
- * appointment id is the only evidence the patient actually has a slot.
+ * The times are taken from deposit_paid_at rather than the row's created_at,
+ * which is when the payment link was made and says nothing about whether it was
+ * ever used. Booking happens seconds after payment, so for a row that has an
+ * appointment id the paid time is also when the booking succeeded.
  */
-async function loadBookedNumbers(settings: LeadfloSettings): Promise<Set<string>> {
-  if (!settings.bookingTable) return new Set();
+async function loadBookingEvidence(settings: LeadfloSettings): Promise<BookingEvidence> {
+  if (!settings.bookingTable) return { numbers: new Set(), lastDepositAt: null, lastBookingAt: null };
 
   const url = process.env[settings.bookingSupabaseUrlEnv];
   const key = process.env[settings.bookingSupabaseServiceRoleKeyEnv];
@@ -662,18 +699,69 @@ async function loadBookedNumbers(settings: LeadfloSettings): Promise<Set<string>
   const bookings = createClient(url, key, { auth: { persistSession: false } });
   const { data, error } = (await bookings
     .from(settings.bookingTable)
-    .select("number, dentally_appointment_id")
-    .not("dentally_appointment_id", "is", null)) as SupabaseResult<
-    Array<{ number: string | null }>
+    .select("number, dentally_appointment_id, deposit_paid_at")) as SupabaseResult<
+    Array<{
+      number: string | null;
+      dentally_appointment_id: string | number | null;
+      deposit_paid_at: string | null;
+    }>
   >;
   if (error) throw new Error(`booking_lookup_failed:${error.code ?? error.message}`);
 
-  const numbers = new Set<string>();
+  const evidence: BookingEvidence = {
+    numbers: new Set<string>(),
+    lastDepositAt: null,
+    lastBookingAt: null,
+  };
+
   for (const row of data ?? []) {
-    const digits = digitsOf(row.number);
-    if (digits) numbers.add(digits);
+    const booked = row.dentally_appointment_id !== null && row.dentally_appointment_id !== undefined;
+    if (booked) {
+      const digits = digitsOf(row.number);
+      if (digits) evidence.numbers.add(digits);
+    }
+
+    const paidAt = row.deposit_paid_at;
+    if (!paidAt) continue;
+    if (!evidence.lastDepositAt || paidAt > evidence.lastDepositAt) evidence.lastDepositAt = paidAt;
+    if (booked && (!evidence.lastBookingAt || paidAt > evidence.lastBookingAt)) {
+      evidence.lastBookingAt = paidAt;
+    }
   }
-  return numbers;
+
+  return evidence;
+}
+
+/**
+ * Record when Dentally and Stripe last did their job.
+ *
+ * Neither can be health-checked from here: the credentials belong to n8n, which
+ * is what calls them. A booking made and a deposit taken are the next best
+ * thing, and unlike a fixed "connected" they age in public, so a practice whose
+ * booking has quietly stopped can see it.
+ *
+ * Only ever writes a time it has evidence for, and never touches status. The
+ * rows are created by migration, so a practice that has not registered these is
+ * simply not updated rather than having them invented for it.
+ */
+async function recordBookingEvidence(
+  supabase: SupabaseClient,
+  practiceId: string,
+  evidence: BookingEvidence,
+) {
+  const updates: Array<[string, string]> = [];
+  if (evidence.lastBookingAt) updates.push(["dentally", evidence.lastBookingAt]);
+  if (evidence.lastDepositAt) updates.push(["stripe", evidence.lastDepositAt]);
+
+  await Promise.all(
+    updates.map(([sourceSystem, at]) =>
+      supabase
+        .from("integrations")
+        .update({ last_synced_at: at, updated_at: new Date().toISOString() })
+        .eq("practice_id", practiceId)
+        .eq("source_system", sourceSystem),
+    ),
+  );
 }
 
 /** Numbers are stored E.164 here and bare in the booking table, so compare digits. */
