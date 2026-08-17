@@ -416,6 +416,27 @@ function normalizeSettings(settings: Record<string, unknown> | null): LeadfloSet
 }
 
 /**
+ * Where a practice's feeder lives and the key that reads it.
+ *
+ * The mirror resolves this per run from the practice's integration row. The
+ * patient history panel needs the same answer for a single lead, and resolving
+ * it the same way keeps one practice's data unreachable with another's key.
+ */
+export async function loadLeadfloFeederAccess(
+  practiceId: string,
+): Promise<{ baseUrl: string; apiKey: string }> {
+  const ours = supabaseAdmin();
+  if (!ours) throw new Error("storage_unavailable");
+
+  const integration = await loadIntegration(ours, practiceId, null);
+  const settings = normalizeSettings(integration.settings);
+  const apiKey = process.env[settings.feederApiKeyEnv];
+  if (!apiKey) throw new Error(`feeder_key_missing:${settings.feederApiKeyEnv}`);
+
+  return { baseUrl: settings.feederBaseUrl, apiKey };
+}
+
+/**
  * The feeder caps an unauthenticated read at a single page, so a full mirror has
  * to present the key. Without it we would silently import a fraction of the
  * practice's leads and look complete.

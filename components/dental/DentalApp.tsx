@@ -66,6 +66,17 @@ function hasTreatmentControls(practice: DentalDashboardData["practice"]) {
   return externalId === "regent-boxly" || externalId === "nuyu-boxly";
 }
 
+/**
+ * Every control on the Config tab is proxied to the practice's own Boxly
+ * backend, so for a practice that was never on Boxly there is nothing behind it
+ * and each request comes back 503. Hiding the tab is the honest state until
+ * those settings have somewhere to live for native practices.
+ */
+function visibleTabs(practice: DentalDashboardData["practice"]) {
+  if (practice?.sourceSystem === "boxly") return tabs;
+  return tabs.filter(([key]) => key !== "config");
+}
+
 export default function DentalApp() {
   const [tab, setTab] = useState<TabKey>("dashboard");
   const [data, setData] = useState<DentalDashboardData | null>(null);
@@ -279,6 +290,15 @@ export default function DentalApp() {
     return () => controller.abort();
   }, [data?.practiceId, selectedLead]);
 
+  // Switching to a practice that has no Config tab while standing on it would
+  // otherwise leave the panel rendered with no way back to it.
+  const practiceSourceSystem = data?.practice?.sourceSystem ?? null;
+  useEffect(() => {
+    if (tab === "config" && practiceSourceSystem && practiceSourceSystem !== "boxly") {
+      setTab("dashboard");
+    }
+  }, [tab, practiceSourceSystem]);
+
   async function provisionDrafts() {
     setProvisioning(true);
     try {
@@ -383,6 +403,8 @@ export default function DentalApp() {
     );
   }
 
+  const shownTabs = visibleTabs(data.practice);
+
   return (
     <main className="min-h-dvh bg-paper pb-[calc(7.5rem+env(safe-area-inset-bottom))] text-ink md:pb-0">
       <div className="mx-auto flex min-h-dvh max-w-6xl flex-col px-4 pb-4 pt-5 sm:px-6 md:py-8">
@@ -444,7 +466,7 @@ export default function DentalApp() {
         </header>
 
         <div className="mt-4 hidden rounded-full bg-white p-1 shadow-sm md:flex">
-          {tabs.map(([key, label, Icon]) => (
+          {shownTabs.map(([key, label, Icon]) => (
             <button
               key={key}
               onClick={() => setTab(key)}
@@ -554,6 +576,7 @@ export default function DentalApp() {
         lead={selectedLead}
         messages={chatMessages}
         loading={chatLoading}
+        practiceId={data.practiceId ?? null}
         onClose={() => setSelectedLeadId(null)}
       />
 
@@ -570,8 +593,8 @@ export default function DentalApp() {
       )}
 
       <nav className="fixed inset-x-0 bottom-0 z-30 min-h-[calc(5.75rem+env(safe-area-inset-bottom))] border-t border-black/5 bg-white/95 px-3 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] pt-2 shadow-2xl backdrop-blur md:hidden">
-        <div className="grid grid-cols-6 gap-1">
-          {tabs.map(([key, label, Icon]) => (
+        <div className={`grid gap-1 ${shownTabs.length === 6 ? "grid-cols-6" : "grid-cols-5"}`}>
+          {shownTabs.map(([key, label, Icon]) => (
             <button
               key={key}
               onClick={() => setTab(key)}
@@ -816,15 +839,18 @@ function LeadDrawer({
   lead,
   messages,
   loading,
+  practiceId,
   onClose,
 }: {
   lead: DentalLead | null;
   messages: DentalMessage[];
   loading: boolean;
+  practiceId: string | null;
   onClose: () => void;
 }) {
-  const [tab, setTab] = useState<"chat" | "details" | "notes">("chat");
+  const [tab, setTab] = useState<"chat" | "details" | "history">("chat");
   const sortedMessages = [...messages].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const history = useLeadHistory(tab === "history" ? lead?.id ?? null : null, practiceId);
   if (!lead) return null;
 
   return (
@@ -863,12 +889,12 @@ function LeadDrawer({
             {[
               ["chat", `Chat (${messages.length})`],
               ["details", "Details"],
-              ["notes", "Notes"],
+              ["history", "History"],
             ].map(([key, label]) => (
               <button
                 key={key}
                 type="button"
-                onClick={() => setTab(key as "chat" | "details" | "notes")}
+                onClick={() => setTab(key as "chat" | "details" | "history")}
                 className={`rounded-full px-3 py-2 text-xs font-semibold transition ${
                   tab === key ? "bg-pine text-lime" : "text-ink/50 hover:text-ink"
                 }`}
@@ -962,16 +988,143 @@ function LeadDrawer({
             </div>
           )}
 
-          {tab === "notes" && (
-            <div className="flex min-h-full flex-col items-center justify-center p-8 text-center">
-              <p className="font-semibold">Notes are coming next.</p>
-              <p className="mt-2 max-w-xs text-sm leading-6 text-ink/50">
-                For now, review the conversation and patient details here. Internal notes will stay separate from patient replies.
-              </p>
-            </div>
-          )}
+          {tab === "history" && <HistoryPanel history={history} />}
         </div>
       </aside>
+    </div>
+  );
+}
+
+type HistoryEntry = {
+  id: string;
+  kind: "note" | "stage" | "activity";
+  at: string | null;
+  title: string;
+  body: string | null;
+};
+
+type HistoryState = {
+  entries: HistoryEntry[];
+  loading: boolean;
+  /** False when this lead's source system keeps no timeline we can read. */
+  supported: boolean;
+  failed: boolean;
+};
+
+/**
+ * A patient's history, loaded when the tab is opened rather than alongside the
+ * lead. It costs a live Leadflo call, which is not worth paying for every row a
+ * user clicks through to read a conversation.
+ */
+function useLeadHistory(leadId: string | null, practiceId: string | null): HistoryState {
+  const [state, setState] = useState<HistoryState>({
+    entries: [],
+    loading: false,
+    supported: true,
+    failed: false,
+  });
+
+  useEffect(() => {
+    if (!leadId) return;
+
+    const controller = new AbortController();
+    setState({ entries: [], loading: true, supported: true, failed: false });
+
+    const params = new URLSearchParams();
+    if (practiceId) params.set("practiceId", practiceId);
+
+    fetch(`/api/leads/${leadId}/history?${params.toString()}`, {
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then(async (res) => ({ ok: res.ok, payload: await res.json().catch(() => ({})) }))
+      .then(({ ok, payload }) => {
+        setState({
+          entries: Array.isArray(payload.entries) ? payload.entries : [],
+          loading: false,
+          supported: payload.supported !== false,
+          failed: !ok,
+        });
+      })
+      .catch((error) => {
+        if (error?.name === "AbortError") return;
+        setState({ entries: [], loading: false, supported: true, failed: true });
+      });
+
+    return () => controller.abort();
+  }, [leadId, practiceId]);
+
+  return state;
+}
+
+const historyKindLabels: Record<HistoryEntry["kind"], string> = {
+  note: "Note",
+  stage: "Stage",
+  activity: "Activity",
+};
+
+function HistoryPanel({ history }: { history: HistoryState }) {
+  if (history.loading) {
+    return <p className="py-8 text-center text-sm text-ink/45">Loading history...</p>;
+  }
+
+  // These two read to whoever is signed in, which includes practices whose leads
+  // come from a different system to the one this panel reads. Naming that system
+  // would put another client's tooling in front of them, so neither does.
+  if (!history.supported) {
+    return (
+      <HistoryEmpty
+        title="No history available."
+        detail="This patient's records come from a system that does not share stage history. Their replies are in the Chat tab."
+      />
+    );
+  }
+
+  if (history.failed) {
+    return (
+      <HistoryEmpty
+        title="History is unavailable right now."
+        detail="The record system could not be reached. Chat and Details are unaffected."
+      />
+    );
+  }
+
+  if (!history.entries.length) {
+    return (
+      <HistoryEmpty
+        title="Nothing recorded yet."
+        detail="Staff notes and stage changes appear here. Patient replies stay in the Chat tab."
+      />
+    );
+  }
+
+  return (
+    <ol className="space-y-3 p-5">
+      {history.entries.map((entry) => (
+        <li key={entry.id} className="rounded-2xl border border-line bg-white px-4 py-3">
+          <div className="flex items-baseline justify-between gap-3">
+            <p className="text-sm font-semibold">{entry.title}</p>
+            <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wider text-ink/35">
+              {historyKindLabels[entry.kind]}
+            </span>
+          </div>
+          {entry.body && (
+            <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-ink/65">{entry.body}</p>
+          )}
+          <p className="mt-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink/35">
+            {entry.at ? formatDateTime(entry.at) : "No date recorded"}
+          </p>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function HistoryEmpty({ title, detail }: { title: string; detail: string }) {
+  return (
+    <div className="flex min-h-full flex-col items-center justify-center p-8 text-center">
+      <p className="font-semibold">{title}</p>
+      <p className="mt-2 max-w-xs text-sm leading-6 text-ink/50">{detail}</p>
     </div>
   );
 }

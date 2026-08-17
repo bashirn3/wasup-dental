@@ -67,8 +67,12 @@ const SOURCE_SYSTEM = "leadflo";
  * Which notes are conversation turns. A patient's timeline also holds staff
  * notes and, on the test patients, leftovers from deployment checks; those are
  * not part of the thread and would read as Poppy talking nonsense.
+ *
+ * Exported because the history panel has to make the same call in reverse: it
+ * shows everything on the timeline that is *not* a turn. Two copies of this rule
+ * would eventually disagree and a note would show in both places or neither.
  */
-const TURN = /^\s*(ai|poppy|client|patient)\s*:\s*/i;
+export const CONVERSATION_TURN = /^\s*(ai|poppy|client|patient)\s*:\s*/i;
 const CLINIC_SPEAKERS = new Set(["ai", "poppy"]);
 
 /**
@@ -193,7 +197,7 @@ function toMessageRow(note: TimelineNote, practiceId: string, leadId: string) {
   const content = (note.content ?? "").trim();
   if (!noteId || !content) return null;
 
-  const speaker = TURN.exec(content);
+  const speaker = CONVERSATION_TURN.exec(content);
   if (!speaker) return null;
 
   const clinic = CLINIC_SPEAKERS.has(speaker[1].toLowerCase());
