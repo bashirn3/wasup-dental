@@ -24,7 +24,9 @@ begin
   values (
     da_practice,
     'leadflo',
-    'Leadflo (WF-1 feeder)',
+    -- Named for what the practice recognises. "WF-1 feeder" is our own plumbing
+    -- and means nothing to them; Leadflo is the CRM they already work in.
+    'Leadflo',
     'legacy_mirror',
     'draft',
     jsonb_build_object(
