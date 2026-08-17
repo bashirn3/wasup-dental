@@ -16,13 +16,20 @@ export type IntegrationStatus = "missing" | "draft" | "connected" | "paused" | "
 
 export type TreatmentKey =
   | "invisalign"
+  | "ortho"
   | "implants"
   | "full_arch_implants"
   | "composites"
   | "whitening"
   | "veneers"
   | "hygiene"
-  | "emergency";
+  | "emergency"
+  | "cosmetic"
+  | "facial"
+  // What a practice's CRM offered no treatment for, or offered one we have no
+  // equivalent of. A real bucket rather than a guess: anything unrecognised used
+  // to be shown as Invisalign, which reads as an enquiry the patient never made.
+  | "general";
 
 export type LeadStatus =
   | "new"
