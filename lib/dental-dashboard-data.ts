@@ -899,8 +899,16 @@ function boolValue(value: unknown): boolean {
   return value === true || value === "true";
 }
 
+/**
+ * An unrecognised treatment becomes a general enquiry, not a specific one.
+ *
+ * This used to fall back to Invisalign, which is a treatment practices actually
+ * sell: every Cosmetic and General enquiry Leadflo sent arrived on the dashboard
+ * looking like an Invisalign lead. A wrong guess reads as fact, where "General
+ * enquiry" reads as what it is.
+ */
 function normalizeTreatment(value: string | null): TreatmentKey {
-  return treatmentKeys.includes(value as TreatmentKey) ? (value as TreatmentKey) : "invisalign";
+  return treatmentKeys.includes(value as TreatmentKey) ? (value as TreatmentKey) : "general";
 }
 
 function normalizeStatus(value: string): DentalLead["status"] {

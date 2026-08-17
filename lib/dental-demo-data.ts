@@ -2,6 +2,9 @@ import type { DentalDashboardData, DentalLead, TreatmentKey } from "@/lib/dental
 
 export const treatmentLabels: Record<TreatmentKey, string> = {
   invisalign: "Invisalign",
+  // Leadflo records "Ortho", which is not necessarily Invisalign, so it is not
+  // named for a brand the patient may not have asked for.
+  ortho: "Orthodontics",
   implants: "Implants",
   full_arch_implants: "Full arch implants",
   composites: "Composite bonding",
@@ -9,6 +12,9 @@ export const treatmentLabels: Record<TreatmentKey, string> = {
   veneers: "Veneers",
   hygiene: "Hygiene",
   emergency: "Emergency",
+  cosmetic: "Cosmetic",
+  facial: "Facial aesthetics",
+  general: "General enquiry",
 };
 
 export const defaultAgentPrompt = `You are the WhatsApp assistant for a dental practice.

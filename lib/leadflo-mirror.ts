@@ -835,11 +835,17 @@ function clampLimit(value: unknown) {
  * Leadflo's treatment labels mapped onto the slugs the dashboard and the agent
  * config use. Implant has to land on "implants" because that is the treatment
  * Poppy's prompt and pricing are keyed on.
+ *
+ * Every slug returned here must exist in TreatmentKey. One that does not is not
+ * rejected, it is quietly relabelled by normalizeTreatment, which is how
+ * "Cosmetic" and "General" came to be displayed as Invisalign.
  */
 function treatmentFromLeadflo(treatmentType: string | null | undefined) {
   const value = (treatmentType ?? "").toLowerCase();
   if (value.includes("implant")) return "implants";
-  if (value.includes("ortho") || value.includes("align")) return "invisalign";
+  // Before the ortho test, which "invisalign" would otherwise match on "align".
+  if (value.includes("invisalign")) return "invisalign";
+  if (value.includes("ortho") || value.includes("align")) return "ortho";
   if (value.includes("cosmetic")) return "cosmetic";
   if (value.includes("facial")) return "facial";
   if (value.includes("whiten")) return "whitening";
