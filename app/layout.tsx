@@ -40,6 +40,13 @@ export const metadata: Metadata = {
   description:
     "Manage dental leads, WhatsApp conversations, and booking follow-up from one clean workspace.",
   applicationName: "Wasup Dental",
+  // Declared by hand because the artwork keeps its own name. Next only adopts an
+  // icon automatically when the file is called icon or favicon inside app/.
+  icons: {
+    icon: [{ url: "/wasup-favicon.png", type: "image/png", sizes: "512x512" }],
+    shortcut: "/wasup-favicon.png",
+    apple: [{ url: "/wasup-favicon-180.png", sizes: "180x180" }],
+  },
 };
 
 export const viewport: Viewport = {
