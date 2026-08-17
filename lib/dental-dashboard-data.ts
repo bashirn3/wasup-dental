@@ -262,7 +262,7 @@ export async function getDentalDashboardData(
     analytics: buildAnalytics(allLeadRows),
     leads: leadRows.map((lead) => mapLead(lead, messageRows)),
     activityLeads: buildActivityLeads(activityRows, lastOutboundByLead),
-    integrations: withExpectedIntegrations(mappedIntegrations),
+    integrations: withExpectedIntegrations(mappedIntegrations, practice.source_system ?? "native"),
     workflows: (workflows ?? []).map(mapWorkflow),
     activity: buildActivity(activityRows, messageRows, lastOutboundByLead),
     sourceHealth: buildSourceHealth(mappedIntegrations),
@@ -639,27 +639,39 @@ function mapWorkflow(row: WorkflowRow): DentalWorkflow {
   };
 }
 
-function withExpectedIntegrations(integrations: DentalIntegration[]): DentalIntegration[] {
+/**
+ * The Connections list: what this practice has, plus placeholders for what it is
+ * expected to have and does not.
+ *
+ * Practices differ in where their leads come from, so the lead source is not part
+ * of the expected set — listing every possible one means all but a practice's own
+ * reads "Not connected". A practice's real integrations are always kept, so the
+ * lane that is actually running shows up whatever it is.
+ */
+function withExpectedIntegrations(
+  integrations: DentalIntegration[],
+  practiceSourceSystem: SourceSystem,
+): DentalIntegration[] {
   const expected: Array<[SourceSystem, string]> = [
-    ["boxly", "Boxly lanes"],
     ["dentally", "Dentally booking"],
     ["stripe", "Stripe Connect"],
   ];
+  // Boxly is a lead source, expected only of the practices that mirror it.
+  if (practiceSourceSystem === "boxly") expected.unshift(["boxly", "Boxly lanes"]);
 
-  return expected.map(([sourceSystem, displayName]) => {
-    const existing = integrations.find((integration) => integration.sourceSystem === sourceSystem);
-    return (
-      existing ?? {
-        id: `missing-${sourceSystem}`,
-        sourceSystem,
-        displayName,
-        status: "missing",
-        mode: "disabled",
-        lastSyncedAt: null,
-        healthLabel: "Not connected",
-      }
-    );
-  });
+  const absent = expected
+    .filter(([sourceSystem]) => !integrations.some((row) => row.sourceSystem === sourceSystem))
+    .map(([sourceSystem, displayName]) => ({
+      id: `missing-${sourceSystem}`,
+      sourceSystem,
+      displayName,
+      status: "missing" as const,
+      mode: "disabled" as const,
+      lastSyncedAt: null,
+      healthLabel: "Not connected",
+    }));
+
+  return [...integrations, ...absent];
 }
 
 function buildActivityLeads(leads: LeadRow[], lastOutboundByLead: Map<string, string>): DentalLead[] {

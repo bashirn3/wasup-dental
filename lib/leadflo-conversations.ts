@@ -9,6 +9,9 @@ import type { SupabaseClient } from "@supabase/supabase-js";
  * the Chat tab reads. Without it a Leadflo lead opens onto an empty panel even
  * though Poppy has held a full conversation with them.
  *
+ * The one turn missing from Leadflo is the opener WF-1 sends, which is taken from
+ * the feeder's own record of the send instead.
+ *
  * Rows are keyed on Leadflo's own note id, so a run is idempotent and the first
  * run over a lead is also its backfill: the entire history arrives at once,
  * each note carrying the time it was written rather than the time it was
@@ -21,6 +24,19 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 type SupabaseResult<T> = {
   data: T | null;
   error: { code?: string; message: string } | null;
+};
+
+/** A row as the messages table takes it. Shared so a turn and an opener match. */
+type MessageRow = {
+  practice_id: string;
+  lead_id: string;
+  direction: "inbound" | "outbound";
+  body: string;
+  ai_generated: boolean;
+  source_system: string;
+  external_id: string;
+  external_payload: Record<string, unknown>;
+  created_at: string;
 };
 
 /** A note as the feeder's timeline route serialises it. */
@@ -36,6 +52,20 @@ export type ConversationLead = {
   externalId: string;
   /** Our leads.id, needed to hang the messages off the right row. */
   leadId: string;
+  /**
+   * The message WF-1 opened with, if it has been sent. Supplied separately
+   * because it is the one turn Leadflo never learns about: WF-1 sends it through
+   * Wasup and reports the result to the feeder, but writes no note. Without it a
+   * thread starts on the patient's reply and reads as though they messaged the
+   * practice out of nowhere.
+   */
+  opener?: LeadOpener | null;
+};
+
+export type LeadOpener = {
+  body: string;
+  /** When it was sent. Required: an opener we cannot place in time is dropped. */
+  sentAt: string;
 };
 
 /**
@@ -105,9 +135,16 @@ export async function syncLeadfloConversations(args: {
       const notes = await fetchTimelineNotes(args.feederBaseUrl, args.feederApiKey, lead.externalId);
       result.notesSeen += notes.length;
 
-      const rows = notes
+      const turns = notes
         .map((note) => toMessageRow(note, args.practiceId, lead.leadId))
-        .filter((row): row is NonNullable<typeof row> => row !== null);
+        .filter((row): row is MessageRow => row !== null);
+
+      // Only add the opener if the thread does not already carry it. Nothing
+      // writes it as a note today, but if that ever changes the note is the
+      // better record of the two and this must not shadow it with a copy.
+      const opener = toOpenerRow(lead, args.practiceId);
+      const rows =
+        opener && !turns.some((turn) => turn.body === opener.body) ? [opener, ...turns] : turns;
       if (!rows.length) continue;
 
       // Leadflo has been seen to repeat an id within a single timeline.
@@ -192,7 +229,36 @@ async function fetchTimelineNotes(
   return Array.isArray(body.notes) ? body.notes : [];
 }
 
-function toMessageRow(note: TimelineNote, practiceId: string, leadId: string) {
+/**
+ * The opener as a message, keyed on the send it came from.
+ *
+ * Keying on the time as well as the patient means a lead who was reset and
+ * messaged again keeps both openers instead of the second one being mistaken for
+ * the first and dropped. The feeder only ever holds the latest, so this is as far
+ * back as that history can go.
+ */
+function toOpenerRow(lead: ConversationLead, practiceId: string): MessageRow | null {
+  const opener = lead.opener;
+  if (!opener) return null;
+
+  const body = opener.body.trim();
+  const sentAt = parseNoteTime(opener.sentAt);
+  if (!body || !sentAt) return null;
+
+  return {
+    practice_id: practiceId,
+    lead_id: lead.leadId,
+    direction: "outbound",
+    body,
+    ai_generated: true,
+    source_system: SOURCE_SYSTEM,
+    external_id: `opener:${lead.externalId}:${sentAt}`,
+    external_payload: { kind: "wf1_opener", outboundSentAt: opener.sentAt },
+    created_at: sentAt,
+  };
+}
+
+function toMessageRow(note: TimelineNote, practiceId: string, leadId: string): MessageRow | null {
   const noteId = note.id ? String(note.id) : null;
   const content = (note.content ?? "").trim();
   if (!noteId || !content) return null;

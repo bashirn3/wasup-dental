@@ -4,6 +4,7 @@ import {
   syncLeadfloConversations,
   type ConversationStat,
   type LeadfloConversationResult,
+  type LeadOpener,
 } from "@/lib/leadflo-conversations";
 
 /**
@@ -56,6 +57,8 @@ type FeederLead = {
   lastSeenAt?: string | null;
   outboundStatus?: string | null;
   outboundSentAt?: string | null;
+  /** What WF-1 actually said. The feeder keeps the text of the latest send. */
+  outboundMessage?: string | null;
   /** Set once WF-2 has written a conversation turn back to Leadflo. */
   noteWrittenAt?: string | null;
   aiNote?: string | null;
@@ -295,9 +298,12 @@ export async function mirrorLeadfloPractice(
     try {
       const talking = rows
         .filter((row) => row.patientId && hasConversation(row))
-        .map((row) => ({ externalId: row.patientId as string }))
-        .filter((lead) => leadIds.has(lead.externalId))
-        .map((lead) => ({ externalId: lead.externalId, leadId: leadIds.get(lead.externalId)! }));
+        .filter((row) => leadIds.has(row.patientId as string))
+        .map((row) => ({
+          externalId: row.patientId as string,
+          leadId: leadIds.get(row.patientId as string)!,
+          opener: openerOf(row),
+        }));
 
       conversations = await syncLeadfloConversations({
         supabase: ours,
@@ -623,6 +629,19 @@ function normalizeLead(row: FeederLead, practiceId: string, now: string) {
  */
 function hasConversation(row: FeederLead) {
   return row.outboundStatus === "sent" || Boolean(row.noteWrittenAt) || Boolean(row.aiNote);
+}
+
+/**
+ * The message WF-1 opened with, where the feeder recorded one.
+ *
+ * Both the text and the send time have to be there. An opener with no time would
+ * land at the moment of import, which puts Poppy's first words after the
+ * patient's reply and reads worse than leaving it out.
+ */
+function openerOf(row: FeederLead): LeadOpener | null {
+  if (row.outboundStatus !== "sent") return null;
+  if (!row.outboundMessage || !row.outboundSentAt) return null;
+  return { body: row.outboundMessage, sentAt: row.outboundSentAt };
 }
 
 /** When Poppy first reached the patient, as well as the feeder can say. */
