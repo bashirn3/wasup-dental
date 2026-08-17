@@ -1068,11 +1068,14 @@ function HistoryPanel({ history }: { history: HistoryState }) {
     return <p className="py-8 text-center text-sm text-ink/45">Loading history...</p>;
   }
 
+  // These two read to whoever is signed in, which includes practices whose leads
+  // come from a different system to the one this panel reads. Naming that system
+  // would put another client's tooling in front of them, so neither does.
   if (!history.supported) {
     return (
       <HistoryEmpty
-        title="No history for this source."
-        detail="History is read from Leadflo. This patient came from another system."
+        title="No history available."
+        detail="This patient's records come from a system that does not share stage history. Their replies are in the Chat tab."
       />
     );
   }
@@ -1081,7 +1084,7 @@ function HistoryPanel({ history }: { history: HistoryState }) {
     return (
       <HistoryEmpty
         title="History is unavailable right now."
-        detail="Leadflo could not be reached. The Chat and Details tabs are unaffected."
+        detail="The record system could not be reached. Chat and Details are unaffected."
       />
     );
   }
