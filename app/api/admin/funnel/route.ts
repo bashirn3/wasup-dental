@@ -1,14 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireInternalAdmin } from "@/lib/dental-auth";
-import { funnelToCsv, getAdminAttributionFunnel } from "@/lib/admin-attribution-funnel";
+import { resolveFunnelAccess } from "@/lib/dental-auth";
+import {
+  funnelToCsv,
+  getAdminAttributionFunnel,
+  scopeFunnelToPractices,
+} from "@/lib/admin-attribution-funnel";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
-  const admin = await requireInternalAdmin();
-  if (!admin) return NextResponse.json({ error: "admin_access_denied" }, { status: 403 });
+  const access = await resolveFunnelAccess();
+  if (!access) return NextResponse.json({ error: "admin_access_denied" }, { status: 403 });
 
-  const result = await getAdminAttributionFunnel();
+  const full = await getAdminAttributionFunnel();
+  // One snapshot covers every practice, so a practice contact's view is cut here
+  // rather than built separately. The CSV is cut with it.
+  const result =
+    access.scope === "all" ? full : scopeFunnelToPractices(full, access.practiceNames);
 
   if (req.nextUrl.searchParams.get("format") === "csv") {
     return new NextResponse(funnelToCsv(result), {

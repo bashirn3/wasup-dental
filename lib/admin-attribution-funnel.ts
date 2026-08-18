@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
   DENTAL_AESTHETICA_CONSULT_VALUE,
+  DENTAL_AESTHETICA_PRACTICE_NAME,
   buildDentalAestheticaRows,
   getDentalAestheticaNotes,
 } from "./funnel-dental-aesthetica";
@@ -185,6 +186,8 @@ type PracticeSource =
 
 type PracticeConfig = {
   label: string;
+  /** The practice's name in our own practices table, used to scope access. */
+  practiceName: string;
   source: PracticeSource;
   /**
    * What one booked consultation is worth. Regent and NuYu charge a consultation
@@ -202,18 +205,21 @@ const CONSULT_FEE_GBP = 65;
 const PRACTICES: Record<PracticeKey, PracticeConfig> = {
   regent: {
     label: "Regent Dental",
+    practiceName: "Regent Dental",
     source: { kind: "boxly_v1", v1BaseUrl: "https://boxly-agent.vercel.app" },
     consultValue: CONSULT_FEE_GBP,
     dentallyTokenEnvs: ["REGENT_DENTALLY_API_TOKEN", "DENTALLY_REGENT_API_TOKEN", "DENTALLY_API_TOKEN_REGENT"],
   },
   nuyu: {
     label: "NuYu Dental",
+    practiceName: "Nuyu Dental",
     source: { kind: "boxly_v1", v1BaseUrl: "https://nuyu-boxly-agent-lyart.vercel.app" },
     consultValue: CONSULT_FEE_GBP,
     dentallyTokenEnvs: ["NUYU_DENTALLY_API_TOKEN", "DENTALLY_NUYU_API_TOKEN", "DENTALLY_API_TOKEN_NUYU"],
   },
   dental_aesthetica: {
     label: "Dental Aesthetica",
+    practiceName: DENTAL_AESTHETICA_PRACTICE_NAME,
     source: { kind: "wasup", activityUrl: "/dashboard" },
     consultValue: DENTAL_AESTHETICA_CONSULT_VALUE,
     dentallyTokenEnvs: [
@@ -310,6 +316,32 @@ export async function getFunnelLeadNotes(practice: PracticeKey, leadId: string):
       createdBy: stringValue(record.created_by) || null,
     };
   });
+}
+
+/**
+ * The funnel as one practice's contact should see it.
+ *
+ * Everything is built in one pass because the practices share a snapshot, so the
+ * cut has to happen on the way out. Warnings about other practices go with them:
+ * they name a system the reader has no part in and cannot act on.
+ */
+export function scopeFunnelToPractices(result: FunnelResult, practiceNames: string[]): FunnelResult {
+  const allowed = funnelKeysForPracticeNames(practiceNames);
+  const labels = new Set([...allowed].map((key) => PRACTICES[key].label));
+  return {
+    ...result,
+    practices: result.practices.filter((practice) => allowed.has(practice.key)),
+    warnings: result.warnings.filter((warning) => [...labels].some((label) => warning.startsWith(label))),
+  };
+}
+
+export function funnelKeysForPracticeNames(practiceNames: string[]): Set<PracticeKey> {
+  const wanted = new Set(practiceNames.map((name) => name.trim().toLowerCase()));
+  return new Set(
+    (Object.keys(PRACTICES) as PracticeKey[]).filter((key) =>
+      wanted.has(PRACTICES[key].practiceName.toLowerCase()),
+    ),
+  );
 }
 
 export function funnelToCsv(result: FunnelResult): string {

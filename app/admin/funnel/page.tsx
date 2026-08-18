@@ -1,13 +1,14 @@
 import { redirect } from "next/navigation";
 import SalesFunnelDashboard from "@/components/admin/SalesFunnelDashboard";
-import { requireInternalAdmin } from "@/lib/dental-auth";
+import { resolveFunnelAccess } from "@/lib/dental-auth";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Attribution Funnel · Wasup Dental" };
 
 export default async function AdminFunnelPage() {
-  const admin = await requireInternalAdmin();
-  if (!admin) redirect("/dashboard");
+  // Internal admins see every practice; a named practice contact sees their own.
+  const access = await resolveFunnelAccess();
+  if (!access) redirect("/dashboard");
 
   return <SalesFunnelDashboard />;
 }

@@ -5,6 +5,8 @@ import { getAdminAttributionFunnel } from "@/lib/admin-attribution-funnel";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
+  // Internal only, unlike reading the funnel: building a snapshot calls Dentally
+  // for every practice, so it is not a practice contact's to trigger.
   const admin = await requireInternalAdmin();
   if (!admin) return NextResponse.json({ error: "admin_access_denied" }, { status: 403 });
 

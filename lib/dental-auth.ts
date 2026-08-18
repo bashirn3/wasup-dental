@@ -1,5 +1,6 @@
 import { auth, currentUser } from "@clerk/nextjs/server";
 import { clerkEnabled } from "@/lib/auth";
+import { funnelClientEmails, internalAdminEmails } from "@/lib/funnel-access";
 import { supabaseAdmin } from "@/lib/supabase";
 import type { DentalWorkspace, Role, SourceSystem } from "@/lib/dental-types";
 
@@ -27,17 +28,18 @@ export type PracticeMembership = {
   isInternalAdmin: boolean;
 };
 
-const DEFAULT_INTERNAL_ADMIN_EMAILS = [
-  "bashir@tryrapidscreen.com",
-  "arslan@tryrapidscreen.com",
-  "asif@smilefast.com",
-];
+const INTERNAL_ADMIN_EMAILS = internalAdminEmails();
 
-const INTERNAL_ADMIN_EMAILS = new Set(
-  [...DEFAULT_INTERNAL_ADMIN_EMAILS, ...(process.env.INTERNAL_ADMIN_EMAILS ?? "").split(",")]
-    .map((email) => email.trim().toLowerCase())
-    .filter(Boolean),
-);
+/**
+ * What of the attribution funnel someone may see.
+ *
+ * "all" is our own view across every practice. A practice contact is scoped to
+ * the practices they belong to, by name, because the funnel keys practices by
+ * name rather than by the workspace id used elsewhere.
+ */
+export type FunnelAccess =
+  | { scope: "all"; email: string | null }
+  | { scope: "practices"; practiceNames: string[]; email: string };
 
 async function currentIdentity() {
   if (!clerkEnabled()) return { userId: null, orgId: null, email: null };
@@ -71,6 +73,35 @@ export async function requireInternalAdmin(): Promise<{ email: string | null } |
   if (!clerkEnabled()) return { email: null };
   const email = await getSignedInEmail();
   return email && INTERNAL_ADMIN_EMAILS.has(email) ? { email } : null;
+}
+
+/**
+ * Null when this person may not see the funnel at all.
+ *
+ * A practice contact must be both named in the funnel client list and an actual
+ * member of a practice. The list alone is not enough: it says who is trusted with
+ * a revenue view, while membership says whose revenue it is.
+ */
+export async function resolveFunnelAccess(): Promise<FunnelAccess | null> {
+  if (!clerkEnabled()) return { scope: "all", email: null };
+
+  const { userId, email } = await currentIdentity();
+  if (!email) return null;
+  if (INTERNAL_ADMIN_EMAILS.has(email)) return { scope: "all", email };
+  if (!funnelClientEmails().has(email)) return null;
+
+  const supabase = supabaseAdmin();
+  if (!supabase || !userId) return null;
+
+  const { data } = (await supabase
+    .from("memberships")
+    .select("practice_id, role, practices(id, name)")
+    .or(`clerk_user_id.eq.${userId},email.ilike.${email}`)) as SupabaseResult<
+    Array<MembershipRow & { practices: PracticeRow | null }>
+  >;
+
+  const practiceNames = [...new Set((data ?? []).map((row) => row.practices?.name).filter(Boolean) as string[])];
+  return practiceNames.length ? { scope: "practices", practiceNames, email } : null;
 }
 
 export async function resolvePracticeMembership(
