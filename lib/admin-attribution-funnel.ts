@@ -59,6 +59,16 @@ export type FunnelLeadRow = {
   commercialSequence: string;
   dentallyPatientId: string | null;
   dentallyStatus: "pending" | "not_enriched";
+  /**
+   * When Dentally was last asked about this patient. Absent on rows from before
+   * the funnel started building up in nightly passes.
+   *
+   * A full pass costs around two seconds a patient, which is far longer than a
+   * serverless function may run, so each run carries forward what earlier runs
+   * learned and spends its time on patients that are new or stale. This is how it
+   * knows which those are.
+   */
+  dentallyCheckedAt?: string | null;
 };
 
 export type FunnelPracticeSummary = {
@@ -103,6 +113,10 @@ export type FunnelResult = {
     message: string;
     enrichedRows?: number;
     attemptedRows?: number;
+    /** Patients whose evidence came from an earlier pass rather than a fresh call. */
+    carriedRows?: number;
+    /** Patients still queued because this run ran out of time. */
+    pendingRows?: number;
   };
   practices: FunnelPracticeSummary[];
   /**
@@ -241,8 +255,17 @@ let inFlight: Promise<Omit<FunnelResult, "cache">> | null = null;
 const dentallyCache = new Map<string, DentallyEvidence>();
 const boxlyBookingCache = new Map<string, { booked: boolean; reason: string }>();
 
+/** What a scheduled run may spend on Dentally before saving what it has. */
+const DEFAULT_DENTALLY_BUDGET_MS = 200_000;
+
 export async function getAdminAttributionFunnel(
-  options: { refresh?: boolean; enrichDentally?: boolean; dentallyLimit?: number } = {},
+  options: {
+    refresh?: boolean;
+    enrichDentally?: boolean;
+    dentallyLimit?: number;
+    /** Time to spend asking Dentally. The rest of the queue waits for next run. */
+    budgetMs?: number;
+  } = {},
 ): Promise<FunnelResult> {
   const refresh = Boolean(options.refresh);
   const enrichDentally = Boolean(options.enrichDentally);
@@ -268,7 +291,11 @@ export async function getAdminAttributionFunnel(
     return withCache(result, "fresh", Date.now() - new Date(result.generatedAt).getTime());
   }
 
-  inFlight = buildFunnel(enrichDentally, options.dentallyLimit ?? 180);
+  inFlight = buildFunnel(
+    enrichDentally,
+    options.dentallyLimit ?? 180,
+    options.budgetMs ?? DEFAULT_DENTALLY_BUDGET_MS,
+  );
   try {
     const result = await inFlight;
     cached = { generatedAtMs: Date.now(), result };
@@ -414,7 +441,11 @@ export function funnelToCsv(result: FunnelResult): string {
   return [headers, ...rows].map((row) => row.map(csvCell).join(",")).join("\n");
 }
 
-async function buildFunnel(enrichDentally: boolean, dentallyLimit: number): Promise<Omit<FunnelResult, "cache">> {
+async function buildFunnel(
+  enrichDentally: boolean,
+  dentallyLimit: number,
+  budgetMs: number,
+): Promise<Omit<FunnelResult, "cache">> {
   // Settled rather than all: one practice's source being down should cost that
   // practice's column, not the whole page.
   const settled = await Promise.allSettled(
@@ -444,15 +475,27 @@ async function buildFunnel(enrichDentally: boolean, dentallyLimit: number): Prom
   };
 
   if (enrichDentally) {
-    const enrichment = await enrichWithDentally(practices, dentallyLimit);
+    const enrichment = await enrichWithDentally(practices, {
+      limitPerPractice: dentallyLimit,
+      budgetMs,
+      carried: await carriedRowsFromSnapshot(),
+    });
     practices = enrichment.practices;
+
+    const parts = [
+      `Dentally matched ${enrichment.enrichedRows} of ${enrichment.attemptedRows} patients asked about`,
+    ];
+    if (enrichment.carriedRows) parts.push(`${enrichment.carriedRows} carried from earlier passes`);
+    if (enrichment.pendingRows) parts.push(`${enrichment.pendingRows} queued for the next run`);
+    if (enrichment.errors.length) parts.push(enrichment.errors[0]);
+
     dentally = {
-      status: enrichment.errors.length ? "partial" : "enriched",
-      message: enrichment.errors.length
-        ? `Dentally snapshot partially enriched ${enrichment.enrichedRows}/${enrichment.attemptedRows} selected rows. ${enrichment.errors[0]}`
-        : `Dentally snapshot enriched ${enrichment.enrichedRows}/${enrichment.attemptedRows} selected rows.`,
+      status: enrichment.errors.length || enrichment.pendingRows ? "partial" : "enriched",
+      message: `${parts.join(". ")}.`,
       enrichedRows: enrichment.enrichedRows,
       attemptedRows: enrichment.attemptedRows,
+      carriedRows: enrichment.carriedRows,
+      pendingRows: enrichment.pendingRows,
     };
   }
 
@@ -462,6 +505,25 @@ async function buildFunnel(enrichDentally: boolean, dentallyLimit: number): Prom
     practices,
     warnings,
   };
+}
+
+/**
+ * The last saved snapshot's rows, keyed by row id.
+ *
+ * Nothing here is trusted as current; it is the starting point a run builds on so
+ * that an unfinished pass costs progress rather than everything.
+ */
+async function carriedRowsFromSnapshot(): Promise<Map<string, FunnelLeadRow>> {
+  const carried = new Map<string, FunnelLeadRow>();
+  try {
+    const persisted = await loadPersistedSnapshot();
+    for (const practice of persisted?.result.practices ?? []) {
+      for (const row of practice.rows) carried.set(row.id, row);
+    }
+  } catch {
+    // A missing or unreadable snapshot only means this run starts from scratch.
+  }
+  return carried;
 }
 
 async function loadPractice(key: PracticeKey): Promise<FunnelPracticeSummary> {
@@ -646,49 +708,155 @@ function consultValueOf(practice: PracticeKey): number {
   return PRACTICES[practice].consultValue;
 }
 
-async function enrichWithDentally(practices: FunnelPracticeSummary[], limitPerPractice: number) {
+/**
+ * Fills in Dentally evidence, within a time budget it can actually finish in.
+ *
+ * Asking Dentally about one patient costs a search plus three lookups, about two
+ * seconds. Several hundred patients is therefore ten minutes of calls, which no
+ * serverless function will survive, and a run that is killed saves nothing at
+ * all: the whole point of the last attempt is lost.
+ *
+ * So each run starts from what the previous snapshot already learned and spends
+ * its budget on the patients that need asking about — ones never checked, then
+ * ones checked long enough ago that their answer may have changed. What it does
+ * not reach stays queued for tomorrow, and what it did reach is saved. Over a few
+ * nights the whole book gets covered, and it keeps itself covered after that.
+ */
+async function enrichWithDentally(
+  practices: FunnelPracticeSummary[],
+  plan: { limitPerPractice: number; budgetMs: number; carried: Map<string, FunnelLeadRow> },
+) {
   const errors: string[] = [];
+  const deadline = Date.now() + plan.budgetMs;
+  const checkedAt = new Date().toISOString();
   let enrichedRows = 0;
   let attemptedRows = 0;
+  let carriedRows = 0;
+  let pendingRows = 0;
   const enrichedPractices: FunnelPracticeSummary[] = [];
 
-  for (const practice of practices) {
+  for (const [practiceIndex, practice] of practices.entries()) {
     const token = dentallyToken(practice.key);
     if (!token) errors.push(`${practice.label}: Dentally token missing`);
     // Only a Boxly-backed practice has notes to read a booking out of.
     const readsBoxlyNotes = PRACTICES[practice.key].source.kind === "boxly_v1";
 
-    const bookingScanCandidates = practice.rows
-      .filter((row) => row.consultBooked || row.clientReplied)
-      .slice(0, Math.max(1, Math.min(limitPerPractice, 180)));
-    const candidateIds = new Set(bookingScanCandidates.map((row) => row.id));
-    const rows: FunnelLeadRow[] = [];
+    // An equal share of what is left, so the first practice's backlog cannot eat
+    // the whole night and leave the others untouched. Time a practice does not
+    // need rolls forward to the ones after it.
+    const remainingMs = Math.max(0, deadline - Date.now());
+    const practiceDeadline = Date.now() + remainingMs / (practices.length - practiceIndex);
 
-    for (const row of practice.rows) {
-      if (!candidateIds.has(row.id)) {
-        rows.push(row);
-        continue;
+    // What earlier passes already established, before spending a single call.
+    const rows = practice.rows.map((row) => {
+      const previous = plan.carried.get(row.id);
+      if (!previous) return row;
+      const withBooking = carryBookingEvidence(row, previous);
+      const evidence = evidenceFromRow(previous);
+      if (!evidence) return withBooking;
+      carriedRows += 1;
+      return applyDentallyEvidence(withBooking, evidence, previous.dentallyCheckedAt ?? null);
+    });
+
+    const queue = rows
+      .filter((row) => (row.consultBooked || row.clientReplied) && needsDentallyCheck(row))
+      .sort(byCheckPriority)
+      .slice(0, Math.max(1, Math.min(plan.limitPerPractice, 180)));
+
+    const done = new Map<string, FunnelLeadRow>();
+    for (let index = 0; index < queue.length; index += 1) {
+      const row = queue[index];
+      if (!token || Date.now() >= practiceDeadline) {
+        pendingRows += queue.length - index;
+        break;
       }
 
       try {
         let enrichedRow = readsBoxlyNotes ? await applyBoxlyNoteBookingEvidence(row) : row;
-        if (token) {
-          attemptedRows += 1;
-          const evidence = await getDentallyEvidence(enrichedRow, token);
-          if (evidence.patientId) enrichedRows += 1;
-          enrichedRow = applyDentallyEvidence(enrichedRow, evidence);
-        }
-        rows.push(enrichedRow);
+        attemptedRows += 1;
+        const evidence = await getDentallyEvidence(enrichedRow, token);
+        if (evidence.patientId) enrichedRows += 1;
+        enrichedRow = applyDentallyEvidence(enrichedRow, evidence, checkedAt);
+        done.set(row.id, enrichedRow);
       } catch (error) {
         errors.push(`${practice.label}: ${error instanceof Error ? error.message : String(error)}`);
-        rows.push(row);
       }
     }
 
-    enrichedPractices.push(summarizeRows(practice.key, rows, practice.testRowsExcluded));
+    enrichedPractices.push(
+      summarizeRows(
+        practice.key,
+        rows.map((row) => done.get(row.id) ?? row),
+        practice.testRowsExcluded,
+      ),
+    );
   }
 
-  return { practices: enrichedPractices, errors, enrichedRows, attemptedRows };
+  return { practices: enrichedPractices, errors, enrichedRows, attemptedRows, carriedRows, pendingRows };
+}
+
+/** How long an answer from Dentally is treated as current. */
+const DENTALLY_RECHECK_MS = 7 * 24 * 60 * 60 * 1000;
+
+function needsDentallyCheck(row: FunnelLeadRow): boolean {
+  if (!row.dentallyCheckedAt) return true;
+  const checked = Date.parse(row.dentallyCheckedAt);
+  if (!Number.isFinite(checked)) return true;
+  return Date.now() - checked > DENTALLY_RECHECK_MS;
+}
+
+/**
+ * Who to ask about first when the budget will not cover everyone: booked
+ * patients, then patients who replied, then whoever has waited longest.
+ */
+function byCheckPriority(a: FunnelLeadRow, b: FunnelLeadRow): number {
+  if (a.consultBooked !== b.consultBooked) return a.consultBooked ? -1 : 1;
+  if (a.clientReplied !== b.clientReplied) return a.clientReplied ? -1 : 1;
+  const aChecked = a.dentallyCheckedAt ? Date.parse(a.dentallyCheckedAt) : 0;
+  const bChecked = b.dentallyCheckedAt ? Date.parse(b.dentallyCheckedAt) : 0;
+  return aChecked - bChecked;
+}
+
+/**
+ * A booking that only the practice's own AI note proves.
+ *
+ * Reading that note costs a call, and nothing in Dentally backs it up, so a run
+ * that had no time to re-read it would report the patient as never booked. The
+ * count would then fall and rise depending on how far the previous night got,
+ * which is worse than useless in a number people are asked to trust.
+ */
+function carryBookingEvidence(row: FunnelLeadRow, previous: FunnelLeadRow): FunnelLeadRow {
+  if (row.consultBooked || !previous.consultBooked) return row;
+  return {
+    ...row,
+    consultBooked: true,
+    consultBookingValue: consultValueOf(row.practice),
+    bookedUsingSystem: true,
+    attributionConfidence: strongerConfidence(row.attributionConfidence, previous.attributionConfidence),
+    attributionReason: previous.attributionReason || row.attributionReason,
+  };
+}
+
+/** The Dentally half of a row from an earlier snapshot, ready to re-apply. */
+function evidenceFromRow(row: FunnelLeadRow): DentallyEvidence | null {
+  if (!row.dentallyPatientId) return null;
+  return {
+    patientId: row.dentallyPatientId,
+    consultBooked: row.consultBooked,
+    consultCompleted: false,
+    treatmentEvidence: row.treatmentEvidence,
+    consultAt: row.dentallyConsultAt,
+    treatmentAt: row.dentallyTreatmentAt,
+    paidAt: row.dentallyPaidAt,
+    attributedPaymentRevenue: row.attributedPaymentRevenue,
+    consultDepositRevenue: row.consultDepositRevenue,
+    monthlyPlanRevenue: row.monthlyPlanRevenue,
+    otherPaidRevenue: row.otherPaidRevenue,
+    paidRevenue: row.hardPaidRevenue,
+    estimatedOpportunity: row.estimatedTreatmentOpportunity,
+    reason: row.attributionReason,
+    treatmentReason: row.treatmentEvidenceReason,
+  };
 }
 
 async function applyBoxlyNoteBookingEvidence(row: FunnelLeadRow): Promise<FunnelLeadRow> {
@@ -728,7 +896,11 @@ async function applyBoxlyNoteBookingEvidence(row: FunnelLeadRow): Promise<Funnel
  * definitely happened, while adding would count the same £30 twice whenever
  * Dentally did record it.
  */
-function applyDentallyEvidence(row: FunnelLeadRow, evidence: DentallyEvidence): FunnelLeadRow {
+function applyDentallyEvidence(
+  row: FunnelLeadRow,
+  evidence: DentallyEvidence,
+  checkedAt: string | null,
+): FunnelLeadRow {
   if (!evidence.patientId) return row;
   const consultBooked = row.consultBooked || evidence.consultBooked;
   const consultAt = earliestDate([row.dentallyConsultAt, evidence.consultAt]);
@@ -756,6 +928,7 @@ function applyDentallyEvidence(row: FunnelLeadRow, evidence: DentallyEvidence): 
     commercialSequence: commercialSequence(row.aiActionedAt || row.actionedAt, consultAt, evidence.treatmentAt, paidAt),
     dentallyPatientId: evidence.patientId,
     dentallyStatus: "pending",
+    dentallyCheckedAt: checkedAt ?? row.dentallyCheckedAt ?? null,
   };
 }
 

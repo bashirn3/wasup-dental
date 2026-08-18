@@ -3,6 +3,7 @@ import { requireInternalAdmin } from "@/lib/dental-auth";
 import { getAdminAttributionFunnel } from "@/lib/admin-attribution-funnel";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
   // Internal only, unlike reading the funnel: building a snapshot calls Dentally

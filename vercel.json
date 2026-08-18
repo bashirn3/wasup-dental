@@ -11,6 +11,10 @@
     {
       "path": "/api/import/leadflo/scheduled",
       "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/admin/funnel/snapshot/scheduled",
+      "schedule": "0 5 * * *"
     }
   ]
 }
