@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import AccountMenu from "@/components/auth/AccountMenu";
 
-type PracticeKey = "regent" | "nuyu";
+type PracticeKey = "regent" | "nuyu" | "dental_aesthetica";
 type StatusFilter = "all" | "replied" | "booked" | "treatment" | "paid";
 type DonutDisplayMode = "number" | "percent";
 
@@ -53,6 +53,10 @@ type FunnelPracticeSummary = {
   key: PracticeKey;
   label: string;
   v1ActivityUrl: string;
+  /** What a consultation costs the patient here. Zero where it is free. */
+  consultValue: number;
+  /** Our own test leads, excluded from every figure on this practice. */
+  testRowsExcluded: number;
   leadsReached: number;
   patientsReplied: number;
   consultsBooked: number;
@@ -83,6 +87,8 @@ type FunnelData = {
     attemptedRows?: number;
   };
   practices: FunnelPracticeSummary[];
+  /** Practices whose source could not be read on the last build. */
+  warnings?: string[];
 };
 
 type FunnelNote = {
@@ -243,7 +249,14 @@ export default function SalesFunnelDashboard() {
                   <h2 className="mt-4 text-3xl font-black tracking-[-0.04em]">{activePractice.label}</h2>
                   <p className="mt-1 text-sm text-white/65">
                     Snapshot {formatDateTime(data?.generatedAt)} · cache {data?.cache.status}
+                    {activePractice.testRowsExcluded > 0 &&
+                      ` · ${activePractice.testRowsExcluded} of our own test leads excluded`}
                   </p>
+                  {(data?.warnings ?? []).map((warning) => (
+                    <p key={warning} className="mt-1 text-sm font-bold text-[#f6c250]">
+                      {warning}
+                    </p>
+                  ))}
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <a
@@ -457,6 +470,7 @@ function CommercialFunnelHero({ practice, dentallyPending }: { practice: FunnelP
       )} deposits/partial`;
   const paidPatientCount = sourceTotals.reduce((sum, item) => sum + item.paid, 0);
   const treatmentCount = sourceTotals.reduce((sum, item) => sum + item.treatment, 0);
+  const chargesForConsults = practice.consultValue > 0;
 
   const stages: CommercialFunnelStage[] = [
     {
@@ -481,8 +495,16 @@ function CommercialFunnelHero({ practice, dentallyPending }: { practice: FunnelP
       key: "booked",
       label: "Consults booked",
       count: practice.consultsBooked,
-      value: money(practice.consultBookingValue),
-      helper: `${practice.consultsBooked} × £65 consult value`,
+      // A practice that charges nothing for a consultation gets a count and the
+      // deposits it actually holds, not a fee it never asked for.
+      value: chargesForConsults
+        ? money(practice.consultBookingValue)
+        : practice.consultDepositRevenue > 0
+          ? `${money(practice.consultDepositRevenue)} held`
+          : `${practice.consultsBooked} booked`,
+      helper: chargesForConsults
+        ? `${practice.consultsBooked} × ${money(practice.consultValue)} consult value`
+        : "No consultation fee here; deposits are refundable",
       width: 76,
       segments: sourceSegments(sourceTotals, "booked"),
     },
@@ -518,7 +540,11 @@ function CommercialFunnelHero({ practice, dentallyPending }: { practice: FunnelP
         </div>
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
           <MiniFact label="Operational saving" value={money(totalOperationalSaving)} />
-          <MiniFact label="Consult value" value={money(practice.consultBookingValue)} />
+          {chargesForConsults ? (
+            <MiniFact label="Consult value" value={money(practice.consultBookingValue)} />
+          ) : (
+            <MiniFact label="Deposits held" value={money(practice.consultDepositRevenue)} />
+          )}
           <MiniFact label="Matched payments" value={dentallyPending ? "Pending" : money(practice.attributedPaymentRevenue)} />
         </div>
       </div>

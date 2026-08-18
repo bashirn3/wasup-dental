@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth, useClerk, useOrganizationList, useUser } from "@clerk/nextjs";
+import { canOpenFunnel } from "@/lib/funnel-access";
 
 type Props = {
   /** Compact avatar for mobile header; slightly larger for desktop sidebar. */
@@ -33,8 +34,10 @@ export default function AccountMenu({ variant = "mobile", label, subLabel }: Pro
 
   const email = user?.primaryEmailAddress?.emailAddress?.toLowerCase() ?? "";
   const memberships = userMemberships?.data ?? [];
-  const isSuperadmin = SUPERADMIN_EMAILS.has(email);
   const canSwitchWorkspace = SUPERADMIN_EMAILS.has(email) && memberships.length > 1;
+  // Wider than superadmin: a practice contact may be trusted with their own
+  // practice's funnel without being trusted to move between workspaces.
+  const showFunnelLink = canOpenFunnel(email);
   const initial =
     user?.firstName?.charAt(0) ||
     user?.primaryEmailAddress?.emailAddress?.charAt(0)?.toUpperCase() ||
@@ -111,7 +114,7 @@ export default function AccountMenu({ variant = "mobile", label, subLabel }: Pro
             })}
         </div>
       )}
-      {isSuperadmin && (
+      {showFunnelLink && (
         <button
           type="button"
           className="acct-signout"

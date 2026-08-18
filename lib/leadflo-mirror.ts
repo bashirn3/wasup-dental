@@ -445,6 +445,33 @@ export async function loadLeadfloFeederAccess(
 }
 
 /**
+ * Where a practice's paid deposits and booked appointments are recorded.
+ *
+ * The mirror reads these rows to tell a booked patient from one still talking.
+ * The attribution funnel needs the same rows to report bookings and deposits,
+ * and resolving both from the integration row keeps one set of credentials.
+ *
+ * Null when the practice has no booking source configured, which is a valid
+ * state: the practice mirrors, it just never reports anyone as booked.
+ */
+export async function loadBookingSourceAccess(
+  practiceId: string,
+): Promise<{ url: string; key: string; table: string } | null> {
+  const ours = supabaseAdmin();
+  if (!ours) throw new Error("storage_unavailable");
+
+  const integration = await loadIntegration(ours, practiceId, null);
+  const settings = normalizeSettings(integration.settings);
+  if (!settings.bookingTable) return null;
+
+  const url = process.env[settings.bookingSupabaseUrlEnv];
+  const key = process.env[settings.bookingSupabaseServiceRoleKeyEnv];
+  if (!url || !key) throw new Error(`booking_source_env_missing:${settings.bookingSupabaseUrlEnv}`);
+
+  return { url, key, table: settings.bookingTable };
+}
+
+/**
  * The feeder caps an unauthenticated read at a single page, so a full mirror has
  * to present the key. Without it we would silently import a fraction of the
  * practice's leads and look complete.

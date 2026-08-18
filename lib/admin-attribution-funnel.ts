@@ -1,8 +1,14 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import {
+  DENTAL_AESTHETICA_CONSULT_VALUE,
+  DENTAL_AESTHETICA_PRACTICE_NAME,
+  buildDentalAestheticaRows,
+  getDentalAestheticaNotes,
+} from "./funnel-dental-aesthetica";
 import { supabaseAdmin } from "./supabase";
 
-export type PracticeKey = "regent" | "nuyu";
+export type PracticeKey = "regent" | "nuyu" | "dental_aesthetica";
 
 export type FunnelStatus =
   | "all"
@@ -59,6 +65,13 @@ export type FunnelPracticeSummary = {
   key: PracticeKey;
   label: string;
   v1ActivityUrl: string;
+  /**
+   * What this practice charges for a consultation. Zero where the consultation
+   * is free, which makes "consults booked" a count rather than a sum.
+   */
+  consultValue: number;
+  /** Our own test leads, excluded from every figure here. */
+  testRowsExcluded: number;
   leadsReached: number;
   patientsReplied: number;
   consultsBooked: number;
@@ -92,6 +105,12 @@ export type FunnelResult = {
     attemptedRows?: number;
   };
   practices: FunnelPracticeSummary[];
+  /**
+   * Practices that could not be read this run. Reported rather than dropped in
+   * silence, so a missing practice cannot be mistaken for a practice with no
+   * activity.
+   */
+  warnings: string[];
 };
 
 export type FunnelNote = {
@@ -154,20 +173,65 @@ type DentallyEvidence = {
   treatmentReason: string | null;
 };
 
-const PRACTICES: Record<PracticeKey, { label: string; v1BaseUrl: string }> = {
+/**
+ * Where a practice's engagement is read from.
+ *
+ * Regent and NuYu each run a Boxly V1 app that reports what their AI did. Dental
+ * Aesthetica does not: its leads, its conversation and its bookings are held by
+ * us, so it is assembled from our own tables instead.
+ */
+type PracticeSource =
+  | { kind: "boxly_v1"; v1BaseUrl: string }
+  | { kind: "wasup"; activityUrl: string };
+
+type PracticeConfig = {
+  label: string;
+  /** The practice's name in our own practices table, used to scope access. */
+  practiceName: string;
+  source: PracticeSource;
+  /**
+   * What one booked consultation is worth. Regent and NuYu charge a consultation
+   * fee, so their booked consults carry it. Dental Aesthetica charges no fee —
+   * only a refundable deposit — and carrying another practice's fee across would
+   * report money it never asked a patient for.
+   */
+  consultValue: number;
+  /** Env vars that may hold this practice's Dentally API token, in order. */
+  dentallyTokenEnvs: string[];
+};
+
+const CONSULT_FEE_GBP = 65;
+
+const PRACTICES: Record<PracticeKey, PracticeConfig> = {
   regent: {
     label: "Regent Dental",
-    v1BaseUrl: "https://boxly-agent.vercel.app",
+    practiceName: "Regent Dental",
+    source: { kind: "boxly_v1", v1BaseUrl: "https://boxly-agent.vercel.app" },
+    consultValue: CONSULT_FEE_GBP,
+    dentallyTokenEnvs: ["REGENT_DENTALLY_API_TOKEN", "DENTALLY_REGENT_API_TOKEN", "DENTALLY_API_TOKEN_REGENT"],
   },
   nuyu: {
     label: "NuYu Dental",
-    v1BaseUrl: "https://nuyu-boxly-agent-lyart.vercel.app",
+    practiceName: "Nuyu Dental",
+    source: { kind: "boxly_v1", v1BaseUrl: "https://nuyu-boxly-agent-lyart.vercel.app" },
+    consultValue: CONSULT_FEE_GBP,
+    dentallyTokenEnvs: ["NUYU_DENTALLY_API_TOKEN", "DENTALLY_NUYU_API_TOKEN", "DENTALLY_API_TOKEN_NUYU"],
+  },
+  dental_aesthetica: {
+    label: "Dental Aesthetica",
+    practiceName: DENTAL_AESTHETICA_PRACTICE_NAME,
+    source: { kind: "wasup", activityUrl: "/dashboard" },
+    consultValue: DENTAL_AESTHETICA_CONSULT_VALUE,
+    dentallyTokenEnvs: [
+      "DENTAL_AESTHETICA_DENTALLY_API_TOKEN",
+      "DA_DENTALLY_API_TOKEN",
+      "DENTALLY_API_TOKEN_DENTAL_AESTHETICA",
+    ],
   },
 };
 
 const PAGE_SIZE = 200;
 const CACHE_TTL_MS = 2 * 60 * 1000;
-const CONSULT_BOOKING_VALUE = 65;
 const META_MESSAGE_COST = 0.07;
 const SNAPSHOT_PATH = join(process.cwd(), ".cache", "admin-attribution-funnel-snapshot.json");
 const SNAPSHOT_KEY = "admin-attribution-funnel";
@@ -234,8 +298,11 @@ export async function getAdminAttributionFunnel(
 
 export async function getFunnelLeadNotes(practice: PracticeKey, leadId: string): Promise<FunnelNote[]> {
   const cfg = PRACTICES[practice];
+  // Dental Aesthetica's AI writes no Boxly note; the conversation is the record.
+  if (cfg.source.kind === "wasup") return getDentalAestheticaNotes(leadId);
+
   const safeLeadId = encodeURIComponent(leadId);
-  const url = `${cfg.v1BaseUrl}/api/v1/agent/activity/${safeLeadId}/notes`;
+  const url = `${cfg.source.v1BaseUrl}/api/v1/agent/activity/${safeLeadId}/notes`;
   const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) throw new Error(`v1_notes_failed:${res.status}`);
   const payload = (await res.json()) as { notes?: unknown[] };
@@ -249,6 +316,32 @@ export async function getFunnelLeadNotes(practice: PracticeKey, leadId: string):
       createdBy: stringValue(record.created_by) || null,
     };
   });
+}
+
+/**
+ * The funnel as one practice's contact should see it.
+ *
+ * Everything is built in one pass because the practices share a snapshot, so the
+ * cut has to happen on the way out. Warnings about other practices go with them:
+ * they name a system the reader has no part in and cannot act on.
+ */
+export function scopeFunnelToPractices(result: FunnelResult, practiceNames: string[]): FunnelResult {
+  const allowed = funnelKeysForPracticeNames(practiceNames);
+  const labels = new Set([...allowed].map((key) => PRACTICES[key].label));
+  return {
+    ...result,
+    practices: result.practices.filter((practice) => allowed.has(practice.key)),
+    warnings: result.warnings.filter((warning) => [...labels].some((label) => warning.startsWith(label))),
+  };
+}
+
+export function funnelKeysForPracticeNames(practiceNames: string[]): Set<PracticeKey> {
+  const wanted = new Set(practiceNames.map((name) => name.trim().toLowerCase()));
+  return new Set(
+    (Object.keys(PRACTICES) as PracticeKey[]).filter((key) =>
+      wanted.has(PRACTICES[key].practiceName.toLowerCase()),
+    ),
+  );
 }
 
 export function funnelToCsv(result: FunnelResult): string {
@@ -322,12 +415,27 @@ export function funnelToCsv(result: FunnelResult): string {
 }
 
 async function buildFunnel(enrichDentally: boolean, dentallyLimit: number): Promise<Omit<FunnelResult, "cache">> {
-  let practices = await Promise.all(
-    (Object.keys(PRACTICES) as PracticeKey[]).map(async (key) => {
-      const leads = await fetchAllV1Leads(key);
-      return summarizePractice(key, leads);
-    }),
+  // Settled rather than all: one practice's source being down should cost that
+  // practice's column, not the whole page.
+  const settled = await Promise.allSettled(
+    (Object.keys(PRACTICES) as PracticeKey[]).map((key) => loadPractice(key)),
   );
+
+  let practices: FunnelPracticeSummary[] = [];
+  const warnings: string[] = [];
+  settled.forEach((outcome, index) => {
+    const key = (Object.keys(PRACTICES) as PracticeKey[])[index];
+    if (outcome.status === "fulfilled") {
+      practices.push(outcome.value);
+      return;
+    }
+    const reason = outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
+    warnings.push(`${PRACTICES[key].label} could not be read: ${reason}`);
+  });
+
+  if (!practices.length) {
+    throw new Error(warnings[0] ?? "no_practice_sources_available");
+  }
 
   let dentally: Omit<FunnelResult["dentally"], "status"> & { status: FunnelResult["dentally"]["status"] } = {
     status: "not_enriched",
@@ -352,14 +460,26 @@ async function buildFunnel(enrichDentally: boolean, dentallyLimit: number): Prom
     generatedAt: new Date().toISOString(),
     dentally,
     practices,
+    warnings,
   };
+}
+
+async function loadPractice(key: PracticeKey): Promise<FunnelPracticeSummary> {
+  const cfg = PRACTICES[key];
+  if (cfg.source.kind === "wasup") {
+    const built = await buildDentalAestheticaRows();
+    return summarizeRows(key, built.rows, built.testRowsExcluded);
+  }
+  const leads = await fetchAllV1Leads(key);
+  return summarizePractice(key, leads);
 }
 
 async function fetchAllV1Leads(practice: PracticeKey): Promise<V1Lead[]> {
   const cfg = PRACTICES[practice];
+  if (cfg.source.kind !== "boxly_v1") return [];
   const all: V1Lead[] = [];
   for (let page = 1; ; page += 1) {
-    const url = new URL(`${cfg.v1BaseUrl}/api/v1/agent/activity-fast`);
+    const url = new URL(`${cfg.source.v1BaseUrl}/api/v1/agent/activity-fast`);
     url.searchParams.set("page", String(page));
     url.searchParams.set("limit", String(PAGE_SIZE));
     const res = await fetch(url.toString(), { next: { revalidate: 60 } });
@@ -379,13 +499,18 @@ function summarizePractice(practice: PracticeKey, leads: V1Lead[]): FunnelPracti
   return summarizeRows(practice, rows);
 }
 
-function summarizeRows(practice: PracticeKey, rows: FunnelLeadRow[]): FunnelPracticeSummary {
+function summarizeRows(
+  practice: PracticeKey,
+  rows: FunnelLeadRow[],
+  testRowsExcluded = 0,
+): FunnelPracticeSummary {
   const cfg = PRACTICES[practice];
+  const source = cfg.source;
   const leadsReached = rows.filter((row) => row.aiActioned).length;
   const patientsReplied = rows.filter((row) => row.clientReplied).length;
   const consultsBooked = rows.filter((row) => row.consultBooked).length;
   const totalMessagesExchanged = rows.reduce((sum, row) => sum + row.conversationCount, 0);
-  const consultBookingValue = consultsBooked * CONSULT_BOOKING_VALUE;
+  const consultBookingValue = consultsBooked * cfg.consultValue;
   const commercialRows = uniqueCommercialRows(rows);
   const attributedPaymentRevenue = commercialRows.reduce((sum, row) => sum + row.attributedPaymentRevenue, 0);
   const consultDepositRevenue = commercialRows.reduce((sum, row) => sum + row.consultDepositRevenue, 0);
@@ -399,7 +524,9 @@ function summarizeRows(practice: PracticeKey, rows: FunnelLeadRow[]): FunnelPrac
   return {
     key: practice,
     label: cfg.label,
-    v1ActivityUrl: `${cfg.v1BaseUrl}/activity`,
+    v1ActivityUrl: source.kind === "wasup" ? source.activityUrl : `${source.v1BaseUrl}/activity`,
+    consultValue: cfg.consultValue,
+    testRowsExcluded,
     leadsReached,
     patientsReplied,
     consultsBooked,
@@ -416,9 +543,24 @@ function summarizeRows(practice: PracticeKey, rows: FunnelLeadRow[]): FunnelPrac
     metaApiCostSavings: roundMoney(totalMessagesExchanged * META_MESSAGE_COST),
     sourceBreakdown: sourceBreakdown(rows),
     funnel: [
-      { key: "source", label: "Leads reached", value: leadsReached, helper: "AI actioned in V1" },
-      { key: "engaged", label: "Patients replied", value: patientsReplied, helper: "Client replied in V1" },
-      { key: "booked", label: "Consults booked", value: consultsBooked, helper: "V1 booked evidence" },
+      {
+        key: "source",
+        label: "Leads reached",
+        value: leadsReached,
+        helper: source.kind === "wasup" ? "WhatsApp opener sent" : "AI actioned in V1",
+      },
+      {
+        key: "engaged",
+        label: "Patients replied",
+        value: patientsReplied,
+        helper: source.kind === "wasup" ? "Patient replied on WhatsApp" : "Client replied in V1",
+      },
+      {
+        key: "booked",
+        label: "Consults booked",
+        value: consultsBooked,
+        helper: source.kind === "wasup" ? "Dentally appointment created" : "V1 booked evidence",
+      },
       {
         key: "treatment",
         label: "Treatment evidence",
@@ -439,7 +581,7 @@ function summarizeRows(practice: PracticeKey, rows: FunnelLeadRow[]): FunnelPrac
 function uniqueCommercialRows(rows: FunnelLeadRow[]): FunnelLeadRow[] {
   const byPatient = new Map<string, FunnelLeadRow>();
   for (const row of rows) {
-    if (!row.treatmentEvidence && row.hardPaidRevenue <= 0 && row.estimatedTreatmentOpportunity <= 0) continue;
+    if (!hasCommercialEvidence(row)) continue;
     const key = commercialPatientKey(row);
     const current = byPatient.get(key);
     if (!current) {
@@ -449,7 +591,7 @@ function uniqueCommercialRows(rows: FunnelLeadRow[]): FunnelLeadRow[] {
     byPatient.set(key, {
       ...current,
       consultBooked: current.consultBooked || row.consultBooked,
-      consultBookingValue: current.consultBooked || row.consultBooked ? CONSULT_BOOKING_VALUE : 0,
+      consultBookingValue: current.consultBooked || row.consultBooked ? consultValueOf(row.practice) : 0,
       attributedPaymentRevenue: Math.max(current.attributedPaymentRevenue, row.attributedPaymentRevenue),
       consultDepositRevenue: Math.max(current.consultDepositRevenue, row.consultDepositRevenue),
       monthlyPlanRevenue: Math.max(current.monthlyPlanRevenue, row.monthlyPlanRevenue),
@@ -470,6 +612,24 @@ function uniqueCommercialRows(rows: FunnelLeadRow[]): FunnelLeadRow[] {
   return [...byPatient.values()];
 }
 
+/**
+ * Whether a row has anything commercial to report.
+ *
+ * Money paid counts, not only treatment. A patient who has paid a deposit and
+ * gone no further is the whole story at a practice whose consultations are free:
+ * requiring treatment evidence dropped their payment from the practice totals
+ * while the lead list still showed it, so the two disagreed.
+ */
+function hasCommercialEvidence(row: FunnelLeadRow): boolean {
+  return (
+    row.treatmentEvidence ||
+    row.hardPaidRevenue > 0 ||
+    row.estimatedTreatmentOpportunity > 0 ||
+    row.attributedPaymentRevenue > 0 ||
+    row.consultDepositRevenue > 0
+  );
+}
+
 function commercialPatientKey(row: FunnelLeadRow): string {
   if (row.dentallyPatientId) return `dentally:${row.dentallyPatientId}`;
   if (row.email) return `email:${normalize(row.email)}`;
@@ -482,6 +642,10 @@ function strongerConfidence(a: AttributionConfidence, b: AttributionConfidence):
   return rank[b] > rank[a] ? b : a;
 }
 
+function consultValueOf(practice: PracticeKey): number {
+  return PRACTICES[practice].consultValue;
+}
+
 async function enrichWithDentally(practices: FunnelPracticeSummary[], limitPerPractice: number) {
   const errors: string[] = [];
   let enrichedRows = 0;
@@ -491,6 +655,8 @@ async function enrichWithDentally(practices: FunnelPracticeSummary[], limitPerPr
   for (const practice of practices) {
     const token = dentallyToken(practice.key);
     if (!token) errors.push(`${practice.label}: Dentally token missing`);
+    // Only a Boxly-backed practice has notes to read a booking out of.
+    const readsBoxlyNotes = PRACTICES[practice.key].source.kind === "boxly_v1";
 
     const bookingScanCandidates = practice.rows
       .filter((row) => row.consultBooked || row.clientReplied)
@@ -505,7 +671,7 @@ async function enrichWithDentally(practices: FunnelPracticeSummary[], limitPerPr
       }
 
       try {
-        let enrichedRow = await applyBoxlyNoteBookingEvidence(row);
+        let enrichedRow = readsBoxlyNotes ? await applyBoxlyNoteBookingEvidence(row) : row;
         if (token) {
           attemptedRows += 1;
           const evidence = await getDentallyEvidence(enrichedRow, token);
@@ -519,7 +685,7 @@ async function enrichWithDentally(practices: FunnelPracticeSummary[], limitPerPr
       }
     }
 
-    enrichedPractices.push(summarizeRows(practice.key, rows));
+    enrichedPractices.push(summarizeRows(practice.key, rows, practice.testRowsExcluded));
   }
 
   return { practices: enrichedPractices, errors, enrichedRows, attemptedRows };
@@ -544,35 +710,50 @@ async function applyBoxlyNoteBookingEvidence(row: FunnelLeadRow): Promise<Funnel
   return {
     ...row,
     consultBooked: true,
-    consultBookingValue: CONSULT_BOOKING_VALUE,
+    consultBookingValue: consultValueOf(row.practice),
     bookedUsingSystem: true,
     attributionConfidence: "high",
     attributionReason: evidence.reason,
   };
 }
 
+/**
+ * Folds Dentally's answer into what the row already proved.
+ *
+ * The payment figures are merged with the larger of the two rather than
+ * replaced. A row can arrive already carrying evidence — Dental Aesthetica's
+ * deposits come from the Stripe record our own workflow wrote — and Dentally
+ * does not always know about it: a deposit taken by Stripe is not guaranteed to
+ * be recorded as a Dentally invoice. Overwriting would erase a payment that
+ * definitely happened, while adding would count the same £30 twice whenever
+ * Dentally did record it.
+ */
 function applyDentallyEvidence(row: FunnelLeadRow, evidence: DentallyEvidence): FunnelLeadRow {
   if (!evidence.patientId) return row;
   const consultBooked = row.consultBooked || evidence.consultBooked;
+  const consultAt = earliestDate([row.dentallyConsultAt, evidence.consultAt]);
+  const paidAt = earliestDate([row.dentallyPaidAt, evidence.paidAt]);
   return {
     ...row,
     consultBooked,
-    consultBookingValue: consultBooked ? CONSULT_BOOKING_VALUE : 0,
+    consultBookingValue: consultBooked ? consultValueOf(row.practice) : 0,
     bookedUsingSystem: consultBooked,
     attributionConfidence: evidence.reason.includes("WhatsApp") || row.attributionConfidence === "high" ? "high" : "medium",
-    attributionReason: evidence.reason || row.attributionReason,
-    attributedPaymentRevenue: evidence.attributedPaymentRevenue,
-    consultDepositRevenue: evidence.consultDepositRevenue,
-    monthlyPlanRevenue: evidence.monthlyPlanRevenue,
-    otherPaidRevenue: evidence.otherPaidRevenue,
-    hardPaidRevenue: evidence.paidRevenue,
-    estimatedTreatmentOpportunity: evidence.estimatedOpportunity,
-    treatmentEvidence: evidence.treatmentEvidence || evidence.paidRevenue > 0,
-    treatmentEvidenceReason: evidence.treatmentReason,
-    dentallyConsultAt: evidence.consultAt,
-    dentallyTreatmentAt: evidence.treatmentAt,
-    dentallyPaidAt: evidence.paidAt,
-    commercialSequence: commercialSequence(row.aiActionedAt || row.actionedAt, evidence.consultAt, evidence.treatmentAt, evidence.paidAt),
+    // Keep the row's own reason when it already proves the booking outright.
+    attributionReason:
+      row.attributionConfidence === "high" ? row.attributionReason : evidence.reason || row.attributionReason,
+    attributedPaymentRevenue: Math.max(row.attributedPaymentRevenue, evidence.attributedPaymentRevenue),
+    consultDepositRevenue: Math.max(row.consultDepositRevenue, evidence.consultDepositRevenue),
+    monthlyPlanRevenue: Math.max(row.monthlyPlanRevenue, evidence.monthlyPlanRevenue),
+    otherPaidRevenue: Math.max(row.otherPaidRevenue, evidence.otherPaidRevenue),
+    hardPaidRevenue: Math.max(row.hardPaidRevenue, evidence.paidRevenue),
+    estimatedTreatmentOpportunity: Math.max(row.estimatedTreatmentOpportunity, evidence.estimatedOpportunity),
+    treatmentEvidence: row.treatmentEvidence || evidence.treatmentEvidence || evidence.paidRevenue > 0,
+    treatmentEvidenceReason: evidence.treatmentReason ?? row.treatmentEvidenceReason,
+    dentallyConsultAt: consultAt,
+    dentallyTreatmentAt: earliestDate([row.dentallyTreatmentAt, evidence.treatmentAt]),
+    dentallyPaidAt: paidAt,
+    commercialSequence: commercialSequence(row.aiActionedAt || row.actionedAt, consultAt, evidence.treatmentAt, paidAt),
     dentallyPatientId: evidence.patientId,
     dentallyStatus: "pending",
   };
@@ -662,6 +843,17 @@ async function getDentallyEvidence(row: FunnelLeadRow, token: string): Promise<D
 }
 
 async function findDentallyPatient(row: FunnelLeadRow, token: string): Promise<Record<string, unknown> | null> {
+  // A row that already knows its patient id was booked by us against that
+  // patient. Searching by name instead risks matching a different person.
+  if (row.dentallyPatientId) {
+    const known = await fetchDentally(
+      `https://api.dentally.co/v1/patients/${encodeURIComponent(row.dentallyPatientId)}`,
+      token,
+    ).catch(() => null);
+    const patient = asRecord(asRecord(known).patient ?? known);
+    if (patient.id) return patient;
+  }
+
   const searches = [row.email, row.phone, row.patientName].filter(Boolean) as string[];
   for (const query of searches) {
     const url = new URL("https://api.dentally.co/v1/patients");
@@ -735,7 +927,7 @@ function mapLead(practice: PracticeKey, practiceLabel: string, lead: V1Lead): Fu
     lastUpdatedAt: stringValue(lead.last_updated_at) || null,
     actionedNote,
     consultBooked,
-    consultBookingValue: consultBooked ? CONSULT_BOOKING_VALUE : 0,
+    consultBookingValue: consultBooked ? consultValueOf(practice) : 0,
     bookedUsingSystem: consultBooked,
     attributionConfidence,
     attributionReason,
@@ -828,7 +1020,8 @@ async function loadPersistedSnapshot(): Promise<{
         const generatedAtMs = Date.parse(String(data.generated_at || parsed.generatedAt));
         if (Number.isFinite(generatedAtMs)) {
           return {
-            result: parsed,
+            // Snapshots written before warnings existed have none.
+            result: { ...parsed, warnings: parsed.warnings ?? [] },
             generatedAtMs,
             status: Date.now() - generatedAtMs <= CACHE_TTL_MS ? "fresh" : "stale",
           };
@@ -844,7 +1037,7 @@ async function loadPersistedSnapshot(): Promise<{
     const generatedAtMs = Date.parse(parsed.generatedAt);
     if (!Number.isFinite(generatedAtMs)) return null;
     return {
-      result: parsed,
+      result: { ...parsed, warnings: parsed.warnings ?? [] },
       generatedAtMs,
       status: Date.now() - generatedAtMs <= CACHE_TTL_MS ? "fresh" : "stale",
     };
@@ -882,6 +1075,7 @@ function noSnapshotResult(): Omit<FunnelResult, "cache"> {
       message: "No merged attribution snapshot has been generated yet.",
     },
     practices: [],
+    warnings: [],
   };
 }
 
@@ -899,11 +1093,7 @@ function clientRepliedFromRaw(raw: Record<string, unknown> | null | undefined): 
 }
 
 function dentallyToken(practice: PracticeKey): string | null {
-  const candidates =
-    practice === "regent"
-      ? ["REGENT_DENTALLY_API_TOKEN", "DENTALLY_REGENT_API_TOKEN", "DENTALLY_API_TOKEN_REGENT"]
-      : ["NUYU_DENTALLY_API_TOKEN", "DENTALLY_NUYU_API_TOKEN", "DENTALLY_API_TOKEN_NUYU"];
-  for (const key of candidates) {
+  for (const key of PRACTICES[practice].dentallyTokenEnvs) {
     const value = process.env[key];
     if (value?.trim()) return value.trim();
   }
@@ -1045,7 +1235,7 @@ function treatmentPlanValueFromPlans(plans: unknown[]): number {
 }
 
 function isConsultDeposit(total: number): boolean {
-  return isApproxMoney(total, 30) || isApproxMoney(total, CONSULT_BOOKING_VALUE);
+  return isApproxMoney(total, 30) || isApproxMoney(total, CONSULT_FEE_GBP);
 }
 
 function isMonthlyTreatmentPlanPayment(total: number): boolean {
