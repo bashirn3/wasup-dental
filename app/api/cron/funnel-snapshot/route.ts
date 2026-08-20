@@ -30,8 +30,15 @@ function isAuthorized(req: NextRequest) {
  * The nightly attribution snapshot.
  *
  * A GET rather than a POST because that is what Vercel's scheduler sends, and
- * secret-gated rather than session-gated because a scheduler has no session. The
- * equivalent POST beside this one is for a signed-in admin refreshing by hand.
+ * secret-gated rather than session-gated because a scheduler has no session.
+ * /api/admin/funnel/snapshot, the POST an admin fires by hand, is the same job
+ * behind a Clerk session.
+ *
+ * It lives here rather than beside that POST because proxy.ts protects
+ * /api/admin with Clerk, and Clerk answers an unauthenticated API request with a
+ * 404 before the handler runs. Scheduled work therefore has to sit outside that
+ * namespace and carry its own secret, as /api/engine/outbound and the
+ * /api/import crons already do.
  */
 export async function GET(req: NextRequest) {
   if (!isAuthorized(req)) {

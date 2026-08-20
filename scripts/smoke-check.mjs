@@ -38,4 +38,49 @@ for (const token of [
   }
 }
 
-console.log("Smoke check passed: shell, dental domain, connectors, and inactive workflow provisioning are present.");
+checkCrons();
+
+/**
+ * Every scheduled path must exist and must be reachable without a session.
+ *
+ * Clerk answers an unauthenticated API request with a 404 rather than a 401, so
+ * a cron pointed at a protected path fails silently: Vercel records a call, the
+ * handler never runs, and the only symptom is data that quietly stops updating.
+ * The nightly funnel snapshot sat under /api/admin for two nights that way.
+ */
+function checkCrons() {
+  const crons = JSON.parse(readFileSync(join(root, "vercel.json"), "utf8")).crons ?? [];
+  const protectedPatterns = routeMatcherPatterns(readFileSync(join(root, "proxy.ts"), "utf8"));
+  const problems = [];
+
+  for (const { path } of crons) {
+    if (!existsSync(join(root, "app", path, "route.ts"))) {
+      problems.push(`${path} has no route handler at app${path}/route.ts`);
+    }
+    const blocking = protectedPatterns.find((pattern) => pattern.test(path));
+    if (blocking) problems.push(`${path} is behind Clerk via ${blocking.source} in proxy.ts`);
+  }
+
+  if (problems.length) {
+    console.error("Cron routing problems:");
+    for (const problem of problems) console.error(`- ${problem}`);
+    process.exit(1);
+  }
+}
+
+/** The path patterns passed to createRouteMatcher, as regexes. */
+function routeMatcherPatterns(source) {
+  return [...source.matchAll(/createRouteMatcher\(\[([\s\S]*?)\]\)/g)]
+    .flatMap(([, body]) => [...body.matchAll(/"([^"]+)"/g)].map(([, pattern]) => pattern))
+    .map(
+      (pattern) =>
+        new RegExp(
+          `^${pattern
+            .split("(.*)")
+            .map((literal) => literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+            .join(".*")}$`,
+        ),
+    );
+}
+
+console.log("Smoke check passed: shell, dental domain, connectors, crons, and inactive workflow provisioning are present.");

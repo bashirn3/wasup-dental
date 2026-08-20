@@ -13,7 +13,7 @@
       "schedule": "*/5 * * * *"
     },
     {
-      "path": "/api/admin/funnel/snapshot/scheduled",
+      "path": "/api/cron/funnel-snapshot",
       "schedule": "0 5 * * *"
     }
   ]
