@@ -516,6 +516,11 @@ export default function DentalApp() {
           )}
           {tab === "agent" && (
             <AgentPanel
+              // Switching practice starts the panel over. Without this the test
+              // conversation, the selected procedure and the open cards all
+              // carry across, so one practice's exchange sits above another's
+              // config.
+              key={data.practiceId ?? "no-practice"}
               practiceName={data.practice?.name ?? "your practice"}
               practiceId={data.practiceId ?? null}
               assistantName={assistantName}
@@ -1677,6 +1682,11 @@ function AnalyticsPanel({
 
 type SimMessage = { id: string; role: "assistant" | "patient"; content: string };
 
+/** A thread nobody has spoken into yet, so the opener may still be swapped out. */
+function threadUnused(thread: SimMessage[]): boolean {
+  return thread.length === 0 || (thread.length === 1 && thread[0].id === "sim-opening");
+}
+
 type AgentVersion = {
   id: string;
   versionNumber: number;
@@ -1822,7 +1832,18 @@ function AgentPanel({
    * What the playground opens with for the procedure being tested, falling back
    * to the practice-wide opener for a procedure that has none of its own.
    */
-  const treatmentOpener = treatmentFirstMessages[selectedTreatment]?.trim() || firstMessage;
+  const ownOpener = treatmentFirstMessages[selectedTreatment]?.trim() ?? "";
+  const treatmentOpener = ownOpener || firstMessage.trim();
+  /**
+   * Said plainly, because a fallback opener presented as the procedure's own is
+   * how this looked broken in the first place: Dental Aesthetica's implants
+   * message appeared under every procedure that had none of its own.
+   */
+  const openerSource = ownOpener
+    ? `Opening as a ${treatmentLabel(selectedTreatment).toLowerCase()} enquiry.`
+    : treatmentOpener
+      ? `No ${treatmentLabel(selectedTreatment).toLowerCase()} opener saved, so this opens with the practice-wide first message.`
+      : "No opening message saved yet, so the thread starts empty.";
 
   async function scanWebsite() {
     if (!websiteUrl.trim()) return;
@@ -1914,12 +1935,27 @@ function AgentPanel({
     }
   }
 
-  const [simMessages, setSimMessages] = useState<SimMessage[]>([
-    { id: "sim-opening", role: "assistant", content: treatmentOpener },
-  ]);
+  /**
+   * How the thread starts for the procedure being tested. Empty where no opener
+   * has been written at all: an empty bubble would look like a message the
+   * assistant sent, and inventing one would be worse.
+   */
+  const openingThread = useCallback(
+    (): SimMessage[] =>
+      treatmentOpener ? [{ id: "sim-opening", role: "assistant", content: treatmentOpener }] : [],
+    [treatmentOpener],
+  );
+
+  const [simMessages, setSimMessages] = useState<SimMessage[]>(openingThread);
   const [draft, setDraft] = useState("");
   const [simSeq, setSimSeq] = useState(0);
   const [simBusy, setSimBusy] = useState(false);
+  /**
+   * Which run of the simulator a reply belongs to. A restart abandons whatever
+   * is in flight, and without this its answer arrives afterwards and attaches
+   * itself to the new thread.
+   */
+  const simRun = useRef(0);
 
   /**
    * Keep the opening bubble on the procedure being tested.
@@ -1934,12 +1970,8 @@ function AgentPanel({
    * they were reading.
    */
   useEffect(() => {
-    setSimMessages((current) =>
-      current.length === 1 && current[0]?.id === "sim-opening"
-        ? [{ id: "sim-opening", role: "assistant", content: treatmentOpener }]
-        : current,
-    );
-  }, [treatmentOpener]);
+    setSimMessages((current) => (threadUnused(current) ? openingThread() : current));
+  }, [openingThread]);
 
   function buildSystemPrompt(): string {
     const lines: string[] = [];
@@ -2005,6 +2037,7 @@ function AgentPanel({
     setSimMessages(history);
     setDraft("");
     setSimBusy(true);
+    const run = simRun.current;
     try {
       const res = await fetch("/api/agent/chat", {
         method: "POST",
@@ -2022,21 +2055,24 @@ function AgentPanel({
         res.ok && payload.reply
           ? extractReplyText(payload.reply)
           : "⚠️ Could not generate a reply. Check the AI configuration.";
+      if (simRun.current !== run) return;
       setSimMessages((current) => [...current, { id: `assistant-${seq}`, role: "assistant", content: reply }]);
     } catch {
+      if (simRun.current !== run) return;
       setSimMessages((current) => [
         ...current,
         { id: `assistant-${seq}`, role: "assistant", content: "⚠️ Could not reach the agent service." },
       ]);
     } finally {
-      setSimBusy(false);
+      if (simRun.current === run) setSimBusy(false);
     }
   }
 
   function restartSim() {
+    simRun.current += 1;
     setSimSeq(0);
     setSimBusy(false);
-    setSimMessages([{ id: "sim-opening", role: "assistant", content: treatmentOpener }]);
+    setSimMessages(openingThread());
     setDraft("");
   }
 
@@ -2667,8 +2703,8 @@ function AgentPanel({
             </button>
           </div>
           <p className="mb-4 rounded-2xl bg-mist px-4 py-3 text-xs leading-5 text-ink/55">
-            Test only. Messages here are not sent to WhatsApp — use this to check tone and safety.
-            Opening as a {treatmentLabel(selectedTreatment).toLowerCase()} enquiry.
+            Test only. Messages here are not sent to WhatsApp — use this to check tone and safety.{" "}
+            {openerSource}
           </p>
           <div className="flex h-[min(460px,calc(100dvh-14rem))] flex-col overflow-hidden rounded-[1.5rem] border border-line bg-[#eee9e1] sm:h-[460px]">
             <div className="flex items-center gap-3 bg-pine px-4 py-3 text-paper">
