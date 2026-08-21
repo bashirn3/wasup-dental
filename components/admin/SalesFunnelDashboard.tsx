@@ -252,8 +252,14 @@ export default function SalesFunnelDashboard() {
                   </div>
                   <h2 className="mt-4 text-3xl font-black tracking-[-0.04em]">{activePractice.label}</h2>
                   <p className="mt-1 text-sm text-white/65">
-                    Snapshot {formatDateTime(data?.generatedAt)} · cache {data?.cache.status}
+                    Updated {snapshotAge(data?.generatedAt)} · {formatDateTime(data?.generatedAt)}
                   </p>
+                  {snapshotOverdue(data?.generatedAt) && (
+                    <p className="mt-1 text-sm font-bold text-[#f6c250]">
+                      The nightly refresh has not run since then, so bookings and payments since
+                      are missing.
+                    </p>
+                  )}
                   {(data?.warnings ?? []).map((warning) => (
                     <p key={warning} className="mt-1 text-sm font-bold text-[#f6c250]">
                       {warning}
@@ -1359,6 +1365,38 @@ function money(value: number) {
 function percent(value: number, total: number) {
   if (!total) return "0%";
   return `${Math.round((value / total) * 100)}%`;
+}
+
+/**
+ * Long enough that a nightly run which has simply not happened yet is not
+ * reported as a problem, short enough that a missed night is. The snapshot is
+ * built at 05:00, so anything past mid-afternoon the following day means a run
+ * was skipped rather than merely pending.
+ */
+const SNAPSHOT_OVERDUE_HOURS = 30;
+
+/** How old the figures are, said the way a person would say it. */
+function snapshotAge(value: string | null | undefined) {
+  const ms = ageMs(value);
+  if (ms === null) return "at an unknown time";
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 2) return "just now";
+  if (minutes < 60) return `${minutes} minutes ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} ${hours === 1 ? "hour" : "hours"} ago`;
+  const days = Math.round(hours / 24);
+  return `${days} ${days === 1 ? "day" : "days"} ago`;
+}
+
+function snapshotOverdue(value: string | null | undefined) {
+  const ms = ageMs(value);
+  return ms !== null && ms > SNAPSHOT_OVERDUE_HOURS * 3_600_000;
+}
+
+function ageMs(value: string | null | undefined) {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? Math.max(0, Date.now() - parsed) : null;
 }
 
 function formatDateTime(value: string | null | undefined) {
