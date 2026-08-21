@@ -252,8 +252,13 @@ export default function SalesFunnelDashboard() {
                   </div>
                   <h2 className="mt-4 text-3xl font-black tracking-[-0.04em]">{activePractice.label}</h2>
                   <p className="mt-1 text-sm text-white/65">
-                    Snapshot {formatDateTime(data?.generatedAt)} · cache {data?.cache.status}
+                    Updated {snapshotAge(data?.generatedAt)} · {formatDateTime(data?.generatedAt)}
                   </p>
+                  {snapshotOverdue(data?.generatedAt) && (
+                    <p className="mt-1 text-sm font-bold text-[#f6c250]">
+                      Bookings and payments made since then are not counted yet.
+                    </p>
+                  )}
                   {(data?.warnings ?? []).map((warning) => (
                     <p key={warning} className="mt-1 text-sm font-bold text-[#f6c250]">
                       {warning}
@@ -1359,6 +1364,39 @@ function money(value: number) {
 function percent(value: number, total: number) {
   if (!total) return "0%";
   return `${Math.round((value / total) * 100)}%`;
+}
+
+/**
+ * When figures are old enough to say so on the page.
+ *
+ * Long enough that a rebuild which has simply not come round yet is not
+ * reported as a problem, short enough that a missed one is: the snapshot is
+ * built at 05:00, so past mid-afternoon the following day one was skipped.
+ */
+const SNAPSHOT_OVERDUE_HOURS = 30;
+
+/** How old the figures are, said the way a person would say it. */
+function snapshotAge(value: string | null | undefined) {
+  const ms = ageMs(value);
+  if (ms === null) return "at an unknown time";
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 2) return "just now";
+  if (minutes < 60) return `${minutes} minutes ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} ${hours === 1 ? "hour" : "hours"} ago`;
+  const days = Math.round(hours / 24);
+  return `${days} ${days === 1 ? "day" : "days"} ago`;
+}
+
+function snapshotOverdue(value: string | null | undefined) {
+  const ms = ageMs(value);
+  return ms !== null && ms > SNAPSHOT_OVERDUE_HOURS * 3_600_000;
+}
+
+function ageMs(value: string | null | undefined) {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? Math.max(0, Date.now() - parsed) : null;
 }
 
 function formatDateTime(value: string | null | undefined) {
