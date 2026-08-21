@@ -256,8 +256,7 @@ export default function SalesFunnelDashboard() {
                   </p>
                   {snapshotOverdue(data?.generatedAt) && (
                     <p className="mt-1 text-sm font-bold text-[#f6c250]">
-                      The nightly refresh has not run since then, so bookings and payments since
-                      are missing.
+                      Bookings and payments made since then are not counted yet.
                     </p>
                   )}
                   {(data?.warnings ?? []).map((warning) => (
@@ -1368,10 +1367,11 @@ function percent(value: number, total: number) {
 }
 
 /**
- * Long enough that a nightly run which has simply not happened yet is not
- * reported as a problem, short enough that a missed night is. The snapshot is
- * built at 05:00, so anything past mid-afternoon the following day means a run
- * was skipped rather than merely pending.
+ * When figures are old enough to say so on the page.
+ *
+ * Long enough that a rebuild which has simply not come round yet is not
+ * reported as a problem, short enough that a missed one is: the snapshot is
+ * built at 05:00, so past mid-afternoon the following day one was skipped.
  */
 const SNAPSHOT_OVERDUE_HOURS = 30;
 
