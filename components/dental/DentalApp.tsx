@@ -1818,6 +1818,11 @@ function AgentPanel({
 
   const facts = treatmentFacts[selectedTreatment] ?? emptyTreatmentFacts();
   const template = treatmentTemplates[selectedTreatment] ?? emptyTemplate();
+  /**
+   * What the playground opens with for the procedure being tested, falling back
+   * to the practice-wide opener for a procedure that has none of its own.
+   */
+  const treatmentOpener = treatmentFirstMessages[selectedTreatment]?.trim() || firstMessage;
 
   async function scanWebsite() {
     if (!websiteUrl.trim()) return;
@@ -1910,11 +1915,31 @@ function AgentPanel({
   }
 
   const [simMessages, setSimMessages] = useState<SimMessage[]>([
-    { id: "sim-opening", role: "assistant", content: firstMessage },
+    { id: "sim-opening", role: "assistant", content: treatmentOpener },
   ]);
   const [draft, setDraft] = useState("");
   const [simSeq, setSimSeq] = useState(0);
   const [simBusy, setSimBusy] = useState(false);
+
+  /**
+   * Keep the opening bubble on the procedure being tested.
+   *
+   * Only the practice-wide opener was ever shown here, so switching procedure
+   * changed the replies but not the opening message, and the playground read as
+   * though the assistant greeted every patient identically. An edit to either
+   * opener lands here too, rather than waiting for a restart.
+   *
+   * A thread the tester has replied in is left alone; Restart picks up the
+   * change. Rewriting a conversation underneath them would lose the exchange
+   * they were reading.
+   */
+  useEffect(() => {
+    setSimMessages((current) =>
+      current.length === 1 && current[0]?.id === "sim-opening"
+        ? [{ id: "sim-opening", role: "assistant", content: treatmentOpener }]
+        : current,
+    );
+  }, [treatmentOpener]);
 
   function buildSystemPrompt(): string {
     const lines: string[] = [];
@@ -2011,7 +2036,7 @@ function AgentPanel({
   function restartSim() {
     setSimSeq(0);
     setSimBusy(false);
-    setSimMessages([{ id: "sim-opening", role: "assistant", content: firstMessage }]);
+    setSimMessages([{ id: "sim-opening", role: "assistant", content: treatmentOpener }]);
     setDraft("");
   }
 
@@ -2643,6 +2668,7 @@ function AgentPanel({
           </div>
           <p className="mb-4 rounded-2xl bg-mist px-4 py-3 text-xs leading-5 text-ink/55">
             Test only. Messages here are not sent to WhatsApp — use this to check tone and safety.
+            Opening as a {treatmentLabel(selectedTreatment).toLowerCase()} enquiry.
           </p>
           <div className="flex h-[min(460px,calc(100dvh-14rem))] flex-col overflow-hidden rounded-[1.5rem] border border-line bg-[#eee9e1] sm:h-[460px]">
             <div className="flex items-center gap-3 bg-pine px-4 py-3 text-paper">
