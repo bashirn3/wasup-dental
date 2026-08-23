@@ -268,8 +268,7 @@ export default function SalesFunnelDashboard() {
                 {/* Named for the file rather than the practice: the heading above
                     already says which practice is on screen, and everything else
                     here follows the tab, so the export doing the same needs no
-                    explaining. The combined file is the exception, so that is the
-                    one that carries a label. */}
+                    explaining. The combined file is the exception and says so. */}
                 <div className="flex flex-wrap items-center gap-2">
                   <a
                     href={`/api/admin/funnel?format=csv&practice=${activePractice.key}`}
@@ -284,9 +283,9 @@ export default function SalesFunnelDashboard() {
                     <a
                       href="/api/admin/funnel?format=csv"
                       title="Download every practice in one CSV"
-                      className="rounded-full px-3 py-2 text-sm font-bold text-white/60 underline decoration-white/25 underline-offset-4"
+                      className="rounded-full bg-white/10 px-4 py-2 text-sm font-bold text-white"
                     >
-                      All practices
+                      All practices CSV
                     </a>
                   )}
                 </div>
