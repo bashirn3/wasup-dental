@@ -353,13 +353,27 @@ export async function getFunnelLeadNotes(practice: PracticeKey, leadId: string):
  * they name a system the reader has no part in and cannot act on.
  */
 export function scopeFunnelToPractices(result: FunnelResult, practiceNames: string[]): FunnelResult {
-  const allowed = funnelKeysForPracticeNames(practiceNames);
-  const labels = new Set([...allowed].map((key) => PRACTICES[key].label));
+  return scopeFunnelToKeys(result, funnelKeysForPracticeNames(practiceNames));
+}
+
+/**
+ * The same cut, by key rather than by the practice names on a membership row.
+ *
+ * Used to narrow an export to the practice being looked at. Kept separate from
+ * the access cut above so a narrowing can be applied after it: whoever asks for
+ * one practice still only gets it if the access cut left it in.
+ */
+export function scopeFunnelToKeys(result: FunnelResult, keys: Set<PracticeKey>): FunnelResult {
+  const labels = new Set([...keys].map((key) => PRACTICES[key].label));
   return {
     ...result,
-    practices: result.practices.filter((practice) => allowed.has(practice.key)),
+    practices: result.practices.filter((practice) => keys.has(practice.key)),
     warnings: result.warnings.filter((warning) => [...labels].some((label) => warning.startsWith(label))),
   };
+}
+
+export function isFunnelPracticeKey(value: string): value is PracticeKey {
+  return Object.prototype.hasOwnProperty.call(PRACTICES, value);
 }
 
 export function funnelKeysForPracticeNames(practiceNames: string[]): Set<PracticeKey> {

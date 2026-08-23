@@ -267,11 +267,21 @@ export default function SalesFunnelDashboard() {
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <a
-                    href="/api/admin/funnel?format=csv"
+                    href={`/api/admin/funnel?format=csv&practice=${activePractice.key}`}
                     className="rounded-full bg-white/10 px-4 py-2 text-sm font-bold text-white"
                   >
-                    Export CSV
+                    Export {activePractice.label}
                   </a>
+                  {/* Only worth offering to someone who can see more than one:
+                      for a single-practice reader it would download the same file. */}
+                  {(data?.practices.length ?? 0) > 1 && (
+                    <a
+                      href="/api/admin/funnel?format=csv"
+                      className="rounded-full bg-white/10 px-4 py-2 text-sm font-bold text-white"
+                    >
+                      Export all practices
+                    </a>
+                  )}
                 </div>
               </div>
             </section>
