@@ -353,13 +353,27 @@ export async function getFunnelLeadNotes(practice: PracticeKey, leadId: string):
  * they name a system the reader has no part in and cannot act on.
  */
 export function scopeFunnelToPractices(result: FunnelResult, practiceNames: string[]): FunnelResult {
-  const allowed = funnelKeysForPracticeNames(practiceNames);
-  const labels = new Set([...allowed].map((key) => PRACTICES[key].label));
+  return scopeFunnelToKeys(result, funnelKeysForPracticeNames(practiceNames));
+}
+
+/**
+ * The same cut, by key rather than by the practice names on a membership row.
+ *
+ * Used to narrow an export to the practice being looked at. Kept separate from
+ * the access cut above so a narrowing can be applied after it: whoever asks for
+ * one practice still only gets it if the access cut left it in.
+ */
+export function scopeFunnelToKeys(result: FunnelResult, keys: Set<PracticeKey>): FunnelResult {
+  const labels = new Set([...keys].map((key) => PRACTICES[key].label));
   return {
     ...result,
-    practices: result.practices.filter((practice) => allowed.has(practice.key)),
+    practices: result.practices.filter((practice) => keys.has(practice.key)),
     warnings: result.warnings.filter((warning) => [...labels].some((label) => warning.startsWith(label))),
   };
+}
+
+export function isFunnelPracticeKey(value: string): value is PracticeKey {
+  return Object.prototype.hasOwnProperty.call(PRACTICES, value);
 }
 
 export function funnelKeysForPracticeNames(practiceNames: string[]): Set<PracticeKey> {
@@ -1547,6 +1561,24 @@ function roundMoney(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
+/**
+ * A cell Excel will read as text.
+ *
+ * Quoting handles commas and newlines, which patient notes are full of. It does
+ * not stop a spreadsheet evaluating a cell that opens with =, @, + or -, and
+ * some of these columns carry text a patient wrote, so a note beginning with =
+ * would run as a formula on whoever opens the file. Marking such a cell with a
+ * leading apostrophe is the usual answer.
+ *
+ * A leading + or - is left alone only when the whole cell is a number or a
+ * phone, because those are the two that legitimately start that way here and an
+ * apostrophe on every phone would be noise. Anything else beginning with a sign
+ * is marked: -2+3+cmd|'/C calc'!A0 is a real payload, so trusting a sign merely
+ * because a digit follows it would let that one through.
+ */
 function csvCell(value: string): string {
-  return `"${value.replace(/"/g, '""')}"`;
+  const escaped = value.replace(/"/g, '""');
+  const signedNumber = /^[+-][\d\s.,()-]*$/.test(escaped);
+  const risky = /^[=@\t\r]/.test(escaped) || (/^[+-]/.test(escaped) && !signedNumber);
+  return `"${risky ? `'${escaped}` : escaped}"`;
 }

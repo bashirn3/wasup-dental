@@ -265,13 +265,29 @@ export default function SalesFunnelDashboard() {
                     </p>
                   ))}
                 </div>
-                <div className="flex flex-wrap gap-2">
+                {/* Named for the file rather than the practice: the heading above
+                    already says which practice is on screen, and everything else
+                    here follows the tab, so the export doing the same needs no
+                    explaining. The combined file is the exception and says so. */}
+                <div className="flex flex-wrap items-center gap-2">
                   <a
-                    href="/api/admin/funnel?format=csv"
+                    href={`/api/admin/funnel?format=csv&practice=${activePractice.key}`}
+                    title={`Download ${activePractice.label} as a CSV`}
                     className="rounded-full bg-white/10 px-4 py-2 text-sm font-bold text-white"
                   >
                     Export CSV
                   </a>
+                  {/* Only worth offering to someone who can see more than one:
+                      for a single-practice reader it would download the same file. */}
+                  {(data?.practices.length ?? 0) > 1 && (
+                    <a
+                      href="/api/admin/funnel?format=csv"
+                      title="Download every practice in one CSV"
+                      className="rounded-full bg-white/10 px-4 py-2 text-sm font-bold text-white"
+                    >
+                      All practices CSV
+                    </a>
+                  )}
                 </div>
               </div>
             </section>
