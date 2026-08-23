@@ -22,6 +22,7 @@ export default function TreatmentControls({
   fixedIds,
   banner,
   saving,
+  perClinicianLengths = false,
   onChange,
   onSave,
 }: {
@@ -32,6 +33,14 @@ export default function TreatmentControls({
   fixedIds: Set<string>;
   banner: Banner;
   saving: boolean;
+  /**
+   * Whether a clinician may run a treatment to their own length.
+   *
+   * Off unless the practice's settings have somewhere to keep it. Where it is
+   * off the treatment's own length applies to everyone, which is how this panel
+   * has always behaved.
+   */
+  perClinicianLengths?: boolean;
   onChange: (treatments: TreatmentControl[]) => void;
   onSave: () => void;
 }) {
@@ -71,7 +80,21 @@ export default function TreatmentControls({
     const ids = new Set(treatment.practitionerIds ?? []);
     if (ids.has(practitionerId)) ids.delete(practitionerId);
     else ids.add(practitionerId);
-    update(treatment.id, { practitionerIds: [...ids] });
+    // A length for a clinician who no longer offers this goes with them, so an
+    // orphan figure cannot come back if they are ticked again months later.
+    update(treatment.id, {
+      practitionerIds: [...ids],
+      practitionerLengthMinutes: withoutClinician(treatment, ids),
+    });
+  }
+
+  function setClinicianLength(treatment: TreatmentControl, practitionerId: string, minutes: number) {
+    const next = { ...(treatment.practitionerLengthMinutes ?? {}) };
+    // Matching the treatment's own length is stored as no override, so a later
+    // change to the treatment carries this clinician with it.
+    if (minutes === treatment.appointmentLengthMinutes) delete next[practitionerId];
+    else next[practitionerId] = minutes;
+    update(treatment.id, { practitionerLengthMinutes: Object.keys(next).length ? next : undefined });
   }
 
   return (
@@ -180,15 +203,31 @@ export default function TreatmentControls({
                   <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
                     {practitioners.map((p) => {
                       const on = (t.practitionerIds ?? []).includes(p.id);
+                      const minutes = clinicianLength(t, p.id);
                       return (
-                        <button
-                          key={p.id}
-                          onClick={() => togglePractitioner(t, p.id)}
-                          className={`rounded-xl border px-2.5 py-2 text-left text-xs font-semibold transition ${on ? "border-pine bg-pine/10 text-pine" : "border-line bg-white text-ink hover:border-pine/40"}`}
-                        >
-                          {on ? "✓ " : "+ "}
-                          {p.name}
-                        </button>
+                        <div key={p.id} className="flex items-center gap-1.5">
+                          <button
+                            onClick={() => togglePractitioner(t, p.id)}
+                            className={`min-w-0 flex-1 rounded-xl border px-2.5 py-2 text-left text-xs font-semibold transition ${on ? "border-pine bg-pine/10 text-pine" : "border-line bg-white text-ink hover:border-pine/40"}`}
+                          >
+                            {on ? "✓ " : "+ "}
+                            {p.name}
+                          </button>
+                          {on && perClinicianLengths && (
+                            <select
+                              value={minutes}
+                              onChange={(e) => setClinicianLength(t, p.id, Number(e.target.value))}
+                              aria-label={`Consultation length for ${p.name}`}
+                              className="shrink-0 rounded-xl border border-line bg-white px-1.5 py-2 text-xs tabular-nums outline-none focus:border-pine/40"
+                            >
+                              {lengthChoices(lengthOptions, minutes).map((m) => (
+                                <option key={m} value={m}>
+                                  {m}m
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                        </div>
                       );
                     })}
                   </div>
@@ -217,6 +256,21 @@ export default function TreatmentControls({
  * otherwise opening the panel would silently move the treatment to whichever
  * option the browser picked first.
  */
+/** A clinician's own length, or the treatment's where they have none. */
+function clinicianLength(treatment: TreatmentControl, practitionerId: string): number {
+  return treatment.practitionerLengthMinutes?.[practitionerId] ?? treatment.appointmentLengthMinutes;
+}
+
+function withoutClinician(
+  treatment: TreatmentControl,
+  keep: Set<string>,
+): Record<string, number> | undefined {
+  const current = treatment.practitionerLengthMinutes;
+  if (!current) return undefined;
+  const next = Object.fromEntries(Object.entries(current).filter(([id]) => keep.has(id)));
+  return Object.keys(next).length ? next : undefined;
+}
+
 function lengthChoices(options: number[], current: number): number[] {
   const all = new Set(options);
   if (current > 0) all.add(current);

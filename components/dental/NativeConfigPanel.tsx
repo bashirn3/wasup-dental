@@ -118,6 +118,7 @@ export default function NativeConfigPanel({
           fixedIds={new Set()}
           banner={banner}
           saving={saving}
+          perClinicianLengths
           onChange={setTreatments}
           onSave={save}
         />
