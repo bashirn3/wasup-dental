@@ -1,6 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState } from "react";
+import TreatmentControls from "@/components/dental/TreatmentControls";
+import {
+  BannerLine,
+  LabeledNumber,
+  Section,
+  Toggle,
+  type Banner,
+} from "@/components/dental/config-ui";
+import type { TreatmentControl } from "@/lib/agent-editable";
 
 /**
  * TEMPORARY: campaign control panel that proxies to a practice's legacy boxly
@@ -26,8 +35,6 @@ type Treatment = {
   deposit_amount: number;
 };
 
-type Banner = { ok: boolean; msg: string } | null;
-
 const CORE_TREATMENT_IDS = new Set([
   "invisalign",
   "composite-bonding",
@@ -36,14 +43,32 @@ const CORE_TREATMENT_IDS = new Set([
   "hygiene",
 ]);
 
-function treatmentIdFromName(name: string): string {
-  return (
-    String(name || "treatment")
-      .toLowerCase()
-      .replace(/&/g, "and")
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-|-$/g, "") || "treatment"
-  );
+/**
+ * Boxly stores these rows snake_cased; our own config camel-cases them like
+ * everything else it holds. Translated at the edge so one panel serves both.
+ */
+function toShared(row: Treatment): TreatmentControl {
+  return {
+    id: row.id,
+    name: row.name,
+    treatmentPageUrl: row.treatment_page_url ?? "",
+    practitionerIds: (row.practitioner_ids ?? []).map(String),
+    appointmentLengthMinutes: row.appointment_length_minutes,
+    depositRequired: row.deposit_required,
+    depositAmount: row.deposit_amount,
+  };
+}
+
+function fromShared(row: TreatmentControl): Treatment {
+  return {
+    id: row.id,
+    name: row.name,
+    treatment_page_url: row.treatmentPageUrl,
+    practitioner_ids: row.practitionerIds,
+    appointment_length_minutes: row.appointmentLengthMinutes,
+    deposit_required: row.depositRequired,
+    deposit_amount: row.depositAmount,
+  };
 }
 
 export default function BoxlyConfigPanel({
@@ -331,42 +356,6 @@ export default function BoxlyConfigPanel({
   }
 
   // ─── Per-treatment (per-lane) client controls ──────────────────────────────
-  function updateTreatment(id: string, patch: Partial<Treatment>) {
-    setTreatments((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
-  }
-  function addTreatment() {
-    setTreatments((prev) => {
-      const existing = new Set(prev.map((t) => t.id));
-      let id = treatmentIdFromName("New Treatment");
-      let suffix = 2;
-      while (existing.has(id)) {
-        id = `${treatmentIdFromName("New Treatment")}-${suffix}`;
-        suffix += 1;
-      }
-      return [
-        ...prev,
-        {
-          id,
-          name: "New Treatment",
-          treatment_page_url: "",
-          practitioner_ids: [],
-          appointment_length_minutes: 30,
-          deposit_required: true,
-          deposit_amount: 30,
-        },
-      ];
-    });
-  }
-  function removeTreatment(id: string) {
-    if (CORE_TREATMENT_IDS.has(id)) return;
-    setTreatments((prev) => prev.filter((t) => t.id !== id));
-  }
-  function togglePractitioner(treatment: Treatment, practitionerId: string) {
-    const ids = new Set(treatment.practitioner_ids ?? []);
-    if (ids.has(practitionerId)) ids.delete(practitionerId);
-    else ids.add(practitionerId);
-    updateTreatment(treatment.id, { practitioner_ids: [...ids] });
-  }
   async function saveTreatments() {
     setBusy("treatments");
     setTreatmentBanner(null);
@@ -425,126 +414,16 @@ export default function BoxlyConfigPanel({
         <>
           {/* Per-treatment (per-lane) client controls — Regent (Dentally) only */}
           {clientControls && (
-          <Section
-            title="Treatment controls"
-            subtitle="Per-treatment settings the booking agent uses: page, clinicians, appointment length, and deposit."
-            action={
-              <button
-                onClick={addTreatment}
-                className="rounded-full border border-line bg-white px-3 py-2 text-xs font-semibold text-pine hover:border-pine"
-              >
-                + Add treatment
-              </button>
-            }
-          >
-            {treatments.length === 0 ? (
-              <p className="text-sm italic text-ink/45">No treatments configured for this practice yet.</p>
-            ) : (
-              <div className="space-y-3">
-                {treatments.map((t) => (
-                  <div key={t.id} className="space-y-3 rounded-2xl border border-line bg-mist/30 p-4">
-                    <div className="flex items-center justify-between gap-2">
-                      <input
-                        type="text"
-                        value={t.name}
-                        onChange={(e) => updateTreatment(t.id, { name: e.target.value })}
-                        className="min-w-0 flex-1 rounded-xl border border-line bg-white px-3 py-2 text-sm font-semibold outline-none focus:border-pine/40"
-                      />
-                      {!CORE_TREATMENT_IDS.has(t.id) && (
-                        <button
-                          onClick={() => removeTreatment(t.id)}
-                          className="shrink-0 rounded-full px-2 py-1 text-xs font-semibold text-ink/50 hover:text-red-600"
-                        >
-                          Remove
-                        </button>
-                      )}
-                    </div>
-
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-semibold uppercase tracking-wide text-ink/55">Treatment page URL</label>
-                      <input
-                        type="url"
-                        value={t.treatment_page_url}
-                        onChange={(e) => updateTreatment(t.id, { treatment_page_url: e.target.value })}
-                        placeholder="https://practice.co.uk/treatments/…"
-                        className="w-full rounded-xl border border-line bg-white px-3 py-2 text-sm outline-none focus:border-pine/40"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                      <label className="space-y-1">
-                        <span className="block text-[10px] font-semibold uppercase tracking-wide text-ink/55">Appointment length</span>
-                        <select
-                          value={t.appointment_length_minutes}
-                          onChange={(e) => updateTreatment(t.id, { appointment_length_minutes: Number(e.target.value) })}
-                          className="w-full rounded-xl border border-line bg-white px-2 py-2 text-sm outline-none focus:border-pine/40"
-                        >
-                          {lengthOptions.map((m) => (
-                            <option key={m} value={m}>{m} minutes</option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="flex items-end gap-2 pb-1">
-                        <input
-                          type="checkbox"
-                          checked={t.deposit_required}
-                          onChange={(e) => updateTreatment(t.id, { deposit_required: e.target.checked })}
-                          className="h-4 w-4 accent-pine"
-                        />
-                        <span className="text-sm font-semibold text-ink">Deposit required</span>
-                      </label>
-                      <LabeledNumber
-                        label="Deposit amount"
-                        value={t.deposit_amount}
-                        min={0}
-                        max={100000}
-                        step={1}
-                        onChange={(v) => updateTreatment(t.id, { deposit_amount: v })}
-                      />
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[10px] font-semibold uppercase tracking-wide text-ink/55">Clinicians</span>
-                        <span className="text-xs font-semibold text-pine">{(t.practitioner_ids ?? []).length} selected</span>
-                      </div>
-                      {practitioners.length === 0 ? (
-                        <p className="rounded-xl bg-mist/60 px-3 py-2 text-xs text-ink/55">
-                          Dentally practitioners aren&apos;t available from this deployment yet.
-                        </p>
-                      ) : (
-                        <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
-                          {practitioners.map((p) => {
-                            const on = (t.practitioner_ids ?? []).includes(p.id);
-                            return (
-                              <button
-                                key={p.id}
-                                onClick={() => togglePractitioner(t, p.id)}
-                                className={`rounded-xl border px-2.5 py-2 text-left text-xs font-semibold transition ${on ? "border-pine bg-pine/10 text-pine" : "border-line bg-white text-ink hover:border-pine/40"}`}
-                              >
-                                {on ? "✓ " : "+ "}
-                                {p.name}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-            <Banner banner={treatmentBanner} />
-            <div className="border-t border-line pt-3">
-              <button
-                disabled={busy === "treatments"}
-                onClick={saveTreatments}
-                className="rounded-full bg-pine px-4 py-2 text-xs font-semibold text-lime disabled:opacity-50"
-              >
-                Save treatment config
-              </button>
-            </div>
-          </Section>
+            <TreatmentControls
+              treatments={treatments.map(toShared)}
+              practitioners={practitioners}
+              lengthOptions={lengthOptions}
+              fixedIds={CORE_TREATMENT_IDS}
+              banner={treatmentBanner}
+              saving={busy === "treatments"}
+              onChange={(next) => setTreatments(next.map(fromShared))}
+              onSave={saveTreatments}
+            />
           )}
 
           {/* Automation */}
@@ -587,7 +466,7 @@ export default function BoxlyConfigPanel({
             )}
 
             <BoxStagePicker boxes={boxes} isSelected={autoSelected} onToggle={toggleAuto} />
-            <Banner banner={autoBanner} />
+            <BannerLine banner={autoBanner} />
 
             <div className="flex flex-wrap gap-2 border-t border-line pt-3">
               <ActionButton
@@ -658,7 +537,7 @@ export default function BoxlyConfigPanel({
                 </div>
               )}
             </div>
-            <Banner banner={remBanner} />
+            <BannerLine banner={remBanner} />
             <div className="flex flex-wrap gap-2 border-t border-line pt-3">
               <button disabled={busy === "reminders"} onClick={() => saveReminders()}
                 className="rounded-full bg-pine px-4 py-2 text-xs font-semibold text-lime disabled:opacity-50">Save reminders</button>
@@ -686,7 +565,7 @@ export default function BoxlyConfigPanel({
           {/* Reactivation */}
           <Section title="Reactivation columns" subtitle="Box + stage combos flagged for reactivation outreach.">
             <BoxStagePicker boxes={boxes} isSelected={reactSelected} onToggle={toggleReact} />
-            <Banner banner={reactBanner} />
+            <BannerLine banner={reactBanner} />
             <div className="flex flex-wrap gap-2 border-t border-line pt-3">
               <ActionButton label="Apply to existing leads" busy={busy === "scraper/reactivation-stages/apply"}
                 onClick={() => runAction("Apply reactivation to existing leads", "scraper/reactivation-stages/apply")} />
@@ -702,7 +581,7 @@ export default function BoxlyConfigPanel({
               <button disabled={busy === "webhook"} onClick={saveWebhook}
                 className="rounded-full bg-pine px-4 py-2.5 text-sm font-semibold text-lime disabled:opacity-50">Save</button>
             </div>
-            <Banner banner={webhookBanner} />
+            <BannerLine banner={webhookBanner} />
           </Section>
 
           {/* Prompt notes */}
@@ -715,7 +594,7 @@ export default function BoxlyConfigPanel({
               <button disabled={busy === "prompt"} onClick={savePrompt}
                 className="rounded-full bg-pine px-4 py-2 text-xs font-semibold text-lime disabled:opacity-50">Save notes</button>
             </div>
-            <Banner banner={promptBanner} />
+            <BannerLine banner={promptBanner} />
           </Section>
 
           {/* Scraper performance */}
@@ -734,7 +613,7 @@ export default function BoxlyConfigPanel({
                   />
                 ))}
               </div>
-              <Banner banner={scraperBanner} />
+              <BannerLine banner={scraperBanner} />
               <div className="border-t border-line pt-3">
                 <button disabled={busy === "scraper"} onClick={saveScraper}
                   className="rounded-full bg-pine px-4 py-2 text-xs font-semibold text-lime disabled:opacity-50">Save config</button>
@@ -744,83 +623,6 @@ export default function BoxlyConfigPanel({
         </>
       )}
     </div>
-  );
-}
-
-function Section({
-  title,
-  subtitle,
-  action,
-  children,
-}: {
-  title: string;
-  subtitle?: string;
-  action?: ReactNode;
-  children: ReactNode;
-}) {
-  return (
-    <div className="space-y-4 rounded-[1.5rem] border border-line bg-white p-5 shadow-sm">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h3 className="text-base font-semibold text-ink">{title}</h3>
-          {subtitle && <p className="mt-0.5 text-sm text-ink/55">{subtitle}</p>}
-        </div>
-        {action}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function Toggle({ on, onToggle, disabled }: { on: boolean; onToggle: () => void; disabled?: boolean }) {
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={onToggle}
-      className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition disabled:opacity-50 ${on ? "bg-pine" : "bg-ink/15"}`}
-      aria-pressed={on}
-    >
-      <span className={`inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${on ? "translate-x-6" : "translate-x-1"}`} />
-    </button>
-  );
-}
-
-function LabeledNumber({
-  label,
-  value,
-  min,
-  max,
-  step,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  onChange: (value: number) => void;
-}) {
-  return (
-    <label className="space-y-1">
-      <span className="block text-[10px] font-semibold uppercase tracking-wide text-ink/55">{label}</span>
-      <input
-        type="number"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(e) => onChange(step < 1 ? parseFloat(e.target.value) || 0 : parseInt(e.target.value, 10) || 0)}
-        className="w-full rounded-xl border border-line bg-white px-2 py-2 text-sm tabular-nums outline-none focus:border-pine/40"
-      />
-    </label>
-  );
-}
-
-function Banner({ banner }: { banner: Banner }) {
-  if (!banner) return null;
-  return (
-    <p className={`text-xs font-semibold ${banner.ok ? "text-pine" : "text-red-600"}`}>{banner.msg}</p>
   );
 }
 

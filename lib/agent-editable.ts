@@ -73,6 +73,40 @@ export type MiscInfo = {
   notes: string;
 };
 
+/**
+ * What the booking agent needs to know about one treatment: where to read about
+ * it, who performs it, how long their consultation runs, and what is taken up
+ * front.
+ *
+ * Deliberately the same shape Regent and NuYu already edit through their own
+ * backend, so one panel serves every practice and the values mean the same thing
+ * whichever system stores them.
+ *
+ * Clinicians are Dentally practitioner ids held as strings. Dentally returns
+ * them as numbers, but they are identifiers rather than quantities, and keeping
+ * them as text stops a large id losing precision on its way through JSON.
+ */
+export type TreatmentControl = {
+  id: string;
+  name: string;
+  treatmentPageUrl: string;
+  practitionerIds: string[];
+  appointmentLengthMinutes: number;
+  depositRequired: boolean;
+  depositAmount: number;
+  /**
+   * Consultation length for a specific clinician, where it differs from the
+   * treatment's own.
+   *
+   * Dental Aesthetica's two implant clinicians sit at 45 and 30 minutes, so a
+   * single figure per treatment could not describe them without being wrong
+   * about one. No control edits this yet; it is carried so what is stored stays
+   * true to what the practice actually runs, and so the booking agent can ask a
+   * clinician's length before falling back to the treatment's.
+   */
+  practitionerLengthMinutes?: Record<string, number>;
+};
+
 export type ClientEditable = {
   assistantName: string;
   openingHours: string;
@@ -83,7 +117,30 @@ export type ClientEditable = {
   treatmentFirstMessages: Record<string, string>;
   treatmentTemplates: Record<string, FirstMessageTemplate>;
   treatmentFacts: Record<string, TreatmentFacts>;
+  treatments: TreatmentControl[];
 };
+
+export function treatmentControlId(name: string): string {
+  return (
+    String(name || "treatment")
+      .toLowerCase()
+      .replace(/&/g, "and")
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "") || "treatment"
+  );
+}
+
+export function emptyTreatmentControl(): TreatmentControl {
+  return {
+    id: "",
+    name: "",
+    treatmentPageUrl: "",
+    practitionerIds: [],
+    appointmentLengthMinutes: 30,
+    depositRequired: true,
+    depositAmount: 30,
+  };
+}
 
 export function emptyTreatmentFacts(): TreatmentFacts {
   return {
@@ -119,6 +176,7 @@ export function emptyClientEditable(): ClientEditable {
     treatmentFirstMessages: {},
     treatmentTemplates: {},
     treatmentFacts: {},
+    treatments: [],
   };
 }
 
@@ -195,6 +253,55 @@ function stringRecord(value: unknown): Record<string, string> {
   return out;
 }
 
+export function treatmentControlFrom(value: unknown): TreatmentControl {
+  const raw = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+  const name = str(raw.name);
+  const ids = Array.isArray(raw.practitionerIds) ? raw.practitionerIds : [];
+  return {
+    id: str(raw.id) || treatmentControlId(name),
+    name,
+    treatmentPageUrl: str(raw.treatmentPageUrl),
+    // Numbers as well as strings: Dentally hands back numeric ids, so a value
+    // that arrived straight from its API would otherwise be dropped.
+    practitionerIds: ids
+      .filter((id): id is string | number => typeof id === "string" || typeof id === "number")
+      .map((id) => String(id).trim())
+      .filter((id) => id.length > 0),
+    appointmentLengthMinutes: num(raw.appointmentLengthMinutes, 30),
+    depositRequired: raw.depositRequired !== false,
+    depositAmount: num(raw.depositAmount, 0),
+    ...(lengthOverridesFrom(raw.practitionerLengthMinutes)),
+  };
+}
+
+/** Omitted entirely when empty, so a treatment without overrides stores none. */
+function lengthOverridesFrom(
+  value: unknown,
+): { practitionerLengthMinutes?: Record<string, number> } {
+  if (!value || typeof value !== "object") return {};
+  const out: Record<string, number> = {};
+  for (const [id, minutes] of Object.entries(value as Record<string, unknown>)) {
+    const parsed = num(minutes, 0);
+    if (parsed > 0) out[id] = parsed;
+  }
+  return Object.keys(out).length ? { practitionerLengthMinutes: out } : {};
+}
+
+function treatmentControlsFrom(value: unknown): TreatmentControl[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const out: TreatmentControl[] = [];
+  for (const item of value) {
+    const treatment = treatmentControlFrom(item);
+    // A duplicate id would make two rows edit each other, so the later one is
+    // dropped rather than silently merged.
+    if (!treatment.name || seen.has(treatment.id)) continue;
+    seen.add(treatment.id);
+    out.push(treatment);
+  }
+  return out;
+}
+
 export function miscFrom(value: unknown): MiscInfo {
   const raw = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
   return {
@@ -218,5 +325,6 @@ export function parseClientEditable(value: unknown): ClientEditable {
     treatmentFirstMessages: stringRecord(raw.treatmentFirstMessages),
     treatmentTemplates: recordOf(raw.treatmentTemplates, templateFrom),
     treatmentFacts: recordOf(raw.treatmentFacts, factsFrom),
+    treatments: treatmentControlsFrom(raw.treatments),
   };
 }

@@ -6,12 +6,14 @@ import {
   type ClientEditable,
   type FirstMessageTemplate,
   type MiscInfo,
+  type TreatmentControl,
   type TreatmentFacts,
   emptyClientEditable,
   factsFrom,
   miscFrom,
   parseClientEditable,
   templateFrom,
+  treatmentControlFrom,
 } from "@/lib/agent-editable";
 
 export const dynamic = "force-dynamic";
@@ -134,6 +136,7 @@ export async function POST(req: NextRequest) {
     treatmentFirstMessages?: Record<string, string>;
     treatmentTemplates?: Record<string, Partial<FirstMessageTemplate>>;
     treatmentFacts?: Record<string, Partial<TreatmentFacts>>;
+    treatments?: Partial<TreatmentControl>[];
   };
 
   // Any member of the practice (admin or client) may self-edit their own agent.
@@ -203,6 +206,11 @@ export async function POST(req: NextRequest) {
       ...previousEditable.treatmentFacts,
       ...mapFacts(body.treatmentFacts),
     },
+    // Replaced wholesale rather than merged, because removing a treatment is a
+    // real edit: merging would make deletion impossible.
+    treatments: body.treatments
+      ? body.treatments.map(treatmentControlFrom)
+      : previousEditable.treatments,
   };
   const workflowSettings: WorkflowSettings = {
     ...(latest?.workflow_settings ?? {}),
