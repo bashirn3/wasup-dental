@@ -376,6 +376,17 @@ export function isFunnelPracticeKey(value: string): value is PracticeKey {
   return Object.prototype.hasOwnProperty.call(PRACTICES, value);
 }
 
+/**
+ * A practice's Dentally token, found by the name it has in our practices table.
+ *
+ * Exported so the dashboard can read clinicians from Dentally without repeating
+ * the list of environment variables each practice's token might be under.
+ */
+export function dentallyTokenForPracticeName(practiceName: string): string | null {
+  const [key] = [...funnelKeysForPracticeNames([practiceName])];
+  return key ? dentallyToken(key) : null;
+}
+
 export function funnelKeysForPracticeNames(practiceNames: string[]): Set<PracticeKey> {
   const wanted = new Set(practiceNames.map((name) => name.trim().toLowerCase()));
   return new Set(

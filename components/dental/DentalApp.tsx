@@ -18,6 +18,7 @@ import {
 } from "recharts";
 import AccountMenu from "@/components/auth/AccountMenu";
 import BoxlyConfigPanel from "@/components/dental/BoxlyConfigPanel";
+import NativeConfigPanel from "@/components/dental/NativeConfigPanel";
 import { MIcon } from "@/components/mot/icons";
 import { defaultAgentPrompt, defaultFirstMessage, treatmentLabels } from "@/lib/dental-demo-data";
 import type { DentalDashboardData, DentalLead, DentalMessage } from "@/lib/dental-types";
@@ -67,13 +68,27 @@ function hasTreatmentControls(practice: DentalDashboardData["practice"]) {
 }
 
 /**
- * Every control on the Config tab is proxied to the practice's own Boxly
+ * Practices whose treatment settings we hold ourselves.
+ *
+ * Named individually rather than inferred from the absence of Boxly, because a
+ * practice only belongs here once its booking agent has treatments worth
+ * setting up. A demo workspace with no clinic behind it would get a page of
+ * empty controls.
+ */
+const NATIVE_CONFIG_PRACTICES = new Set(["Dental Aesthetica"]);
+
+function hasNativeConfig(practice: DentalDashboardData["practice"]) {
+  return NATIVE_CONFIG_PRACTICES.has(practice?.name ?? "");
+}
+
+/**
+ * Every control on the Boxly Config tab is proxied to the practice's own Boxly
  * backend, so for a practice that was never on Boxly there is nothing behind it
- * and each request comes back 503. Hiding the tab is the honest state until
- * those settings have somewhere to live for native practices.
+ * and each request comes back 503. Such a practice sees the tab only where we
+ * hold its settings ourselves.
  */
 function visibleTabs(practice: DentalDashboardData["practice"]) {
-  if (practice?.sourceSystem === "boxly") return tabs;
+  if (practice?.sourceSystem === "boxly" || hasNativeConfig(practice)) return tabs;
   return tabs.filter(([key]) => key !== "config");
 }
 
@@ -293,11 +308,13 @@ export default function DentalApp() {
   // Switching to a practice that has no Config tab while standing on it would
   // otherwise leave the panel rendered with no way back to it.
   const practiceSourceSystem = data?.practice?.sourceSystem ?? null;
+  const practiceName = data?.practice?.name ?? null;
   useEffect(() => {
-    if (tab === "config" && practiceSourceSystem && practiceSourceSystem !== "boxly") {
-      setTab("dashboard");
-    }
-  }, [tab, practiceSourceSystem]);
+    if (tab !== "config" || !practiceSourceSystem) return;
+    const shown =
+      practiceSourceSystem === "boxly" || NATIVE_CONFIG_PRACTICES.has(practiceName ?? "");
+    if (!shown) setTab("dashboard");
+  }, [tab, practiceSourceSystem, practiceName]);
 
   async function provisionDrafts() {
     setProvisioning(true);
@@ -564,13 +581,19 @@ export default function DentalApp() {
               onReloadConfig={loadConfig}
             />
           )}
-          {tab === "config" && (
-            <BoxlyConfigPanel
-              practiceId={data.practiceId ?? null}
-              practiceName={data.practice?.name ?? "your practice"}
-              clientControls={hasTreatmentControls(data.practice)}
-            />
-          )}
+          {tab === "config" &&
+            (data.practice?.sourceSystem === "boxly" ? (
+              <BoxlyConfigPanel
+                practiceId={data.practiceId ?? null}
+                practiceName={data.practice?.name ?? "your practice"}
+                clientControls={hasTreatmentControls(data.practice)}
+              />
+            ) : (
+              <NativeConfigPanel
+                practiceId={data.practiceId ?? null}
+                practiceName={data.practice?.name ?? "your practice"}
+              />
+            ))}
           {tab === "connect" && (
             <ConnectPanel data={data} provisioning={provisioning} onProvision={provisionDrafts} />
           )}
