@@ -2,8 +2,9 @@ import type { DentalDashboardData, DentalLead, TreatmentKey } from "@/lib/dental
 
 export const treatmentLabels: Record<TreatmentKey, string> = {
   invisalign: "Invisalign",
-  // Leadflo records "Ortho", which is not necessarily Invisalign, so it is not
-  // named for a brand the patient may not have asked for.
+  // Kept for rows written before Leadflo's "Ortho" was mapped to invisalign.
+  // Nothing produces this slug now, and a lead that still holds it should read
+  // as orthodontics rather than fall through to General.
   ortho: "Orthodontics",
   implants: "Implants",
   full_arch_implants: "Full arch implants",
