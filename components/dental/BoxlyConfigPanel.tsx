@@ -9,7 +9,7 @@ import {
   Toggle,
   type Banner,
 } from "@/components/dental/config-ui";
-import type { TreatmentControl } from "@/lib/agent-editable";
+import { withNamedIds, type TreatmentControl } from "@/lib/agent-editable";
 
 /**
  * TEMPORARY: campaign control panel that proxies to a practice's legacy boxly
@@ -421,7 +421,10 @@ export default function BoxlyConfigPanel({
               fixedIds={CORE_TREATMENT_IDS}
               banner={treatmentBanner}
               saving={busy === "treatments"}
-              onChange={(next) => setTreatments(next.map(fromShared))}
+              // Boxly keys its treatments on the id, so a row the practice has
+              // just added is named before it is handed back, rather than sent
+              // with the blank id the panel adds it with.
+              onChange={(next) => setTreatments(withNamedIds(next).map(fromShared))}
               onSave={saveTreatments}
             />
           )}
