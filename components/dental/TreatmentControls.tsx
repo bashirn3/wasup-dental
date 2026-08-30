@@ -1,7 +1,6 @@
 "use client";
 
 import type { TreatmentControl } from "@/lib/agent-editable";
-import { treatmentControlId } from "@/lib/agent-editable";
 import { BannerLine, LabeledNumber, Section, type Banner } from "@/components/dental/config-ui";
 
 export type Practitioner = { id: string; name: string };
@@ -44,23 +43,29 @@ export default function TreatmentControls({
   onChange: (treatments: TreatmentControl[]) => void;
   onSave: () => void;
 }) {
-  function update(id: string, patch: Partial<TreatmentControl>) {
-    onChange(treatments.map((t) => (t.id === id ? { ...t, ...patch } : t)));
+  // Rows are addressed by position, not by id, because a row being added does
+  // not have an id yet: see add().
+  function update(index: number, patch: Partial<TreatmentControl>) {
+    onChange(treatments.map((t, i) => (i === index ? { ...t, ...patch } : t)));
   }
 
+  /**
+   * A new row is saved without an id, and is named by whatever the practice
+   * calls it.
+   *
+   * The id is the key the booking agent matches a lead's treatment on, so it
+   * has to mean something. Minting one here meant minting it from the
+   * placeholder name, and renaming the row afterwards left the id behind:
+   * Dental Aesthetica's Invisalign row reached production filed under
+   * "new-treatment". Leaving it blank lets the parser derive it from the name
+   * on save, and an id that already exists is never recomputed, so renaming a
+   * treatment later cannot silently re-key a live one.
+   */
   function add() {
-    const taken = new Set(treatments.map((t) => t.id));
-    const base = treatmentControlId("New Treatment");
-    let id = base;
-    let suffix = 2;
-    while (taken.has(id)) {
-      id = `${base}-${suffix}`;
-      suffix += 1;
-    }
     onChange([
       ...treatments,
       {
-        id,
+        id: "",
         name: "New Treatment",
         treatmentPageUrl: "",
         practitionerIds: [],
@@ -71,30 +76,39 @@ export default function TreatmentControls({
     ]);
   }
 
-  function remove(id: string) {
-    if (fixedIds.has(id)) return;
-    onChange(treatments.filter((t) => t.id !== id));
+  function remove(index: number) {
+    if (fixedIds.has(treatments[index]?.id ?? "")) return;
+    onChange(treatments.filter((_, i) => i !== index));
   }
 
-  function togglePractitioner(treatment: TreatmentControl, practitionerId: string) {
+  function togglePractitioner(
+    treatment: TreatmentControl,
+    index: number,
+    practitionerId: string,
+  ) {
     const ids = new Set(treatment.practitionerIds ?? []);
     if (ids.has(practitionerId)) ids.delete(practitionerId);
     else ids.add(practitionerId);
     // A length for a clinician who no longer offers this goes with them, so an
     // orphan figure cannot come back if they are ticked again months later.
-    update(treatment.id, {
+    update(index, {
       practitionerIds: [...ids],
       practitionerLengthMinutes: withoutClinician(treatment, ids),
     });
   }
 
-  function setClinicianLength(treatment: TreatmentControl, practitionerId: string, minutes: number) {
+  function setClinicianLength(
+    treatment: TreatmentControl,
+    index: number,
+    practitionerId: string,
+    minutes: number,
+  ) {
     const next = { ...(treatment.practitionerLengthMinutes ?? {}) };
     // Matching the treatment's own length is stored as no override, so a later
     // change to the treatment carries this clinician with it.
     if (minutes === treatment.appointmentLengthMinutes) delete next[practitionerId];
     else next[practitionerId] = minutes;
-    update(treatment.id, { practitionerLengthMinutes: Object.keys(next).length ? next : undefined });
+    update(index, { practitionerLengthMinutes: Object.keys(next).length ? next : undefined });
   }
 
   return (
@@ -116,18 +130,18 @@ export default function TreatmentControls({
         </p>
       ) : (
         <div className="space-y-3">
-          {treatments.map((t) => (
-            <div key={t.id} className="space-y-3 rounded-2xl border border-line bg-mist/30 p-4">
+          {treatments.map((t, i) => (
+            <div key={i} className="space-y-3 rounded-2xl border border-line bg-mist/30 p-4">
               <div className="flex items-center justify-between gap-2">
                 <input
                   type="text"
                   value={t.name}
-                  onChange={(e) => update(t.id, { name: e.target.value })}
+                  onChange={(e) => update(i, { name: e.target.value })}
                   className="min-w-0 flex-1 rounded-xl border border-line bg-white px-3 py-2 text-sm font-semibold outline-none focus:border-pine/40"
                 />
                 {!fixedIds.has(t.id) && (
                   <button
-                    onClick={() => remove(t.id)}
+                    onClick={() => remove(i)}
                     className="shrink-0 rounded-full px-2 py-1 text-xs font-semibold text-ink/50 hover:text-red-600"
                   >
                     Remove
@@ -142,7 +156,7 @@ export default function TreatmentControls({
                 <input
                   type="url"
                   value={t.treatmentPageUrl}
-                  onChange={(e) => update(t.id, { treatmentPageUrl: e.target.value })}
+                  onChange={(e) => update(i, { treatmentPageUrl: e.target.value })}
                   placeholder="https://practice.co.uk/treatments/…"
                   className="w-full rounded-xl border border-line bg-white px-3 py-2 text-sm outline-none focus:border-pine/40"
                 />
@@ -156,7 +170,7 @@ export default function TreatmentControls({
                   <select
                     value={t.appointmentLengthMinutes}
                     onChange={(e) =>
-                      update(t.id, { appointmentLengthMinutes: Number(e.target.value) })
+                      update(i, { appointmentLengthMinutes: Number(e.target.value) })
                     }
                     className="w-full rounded-xl border border-line bg-white px-2 py-2 text-sm outline-none focus:border-pine/40"
                   >
@@ -171,7 +185,7 @@ export default function TreatmentControls({
                   <input
                     type="checkbox"
                     checked={t.depositRequired}
-                    onChange={(e) => update(t.id, { depositRequired: e.target.checked })}
+                    onChange={(e) => update(i, { depositRequired: e.target.checked })}
                     className="h-4 w-4 accent-pine"
                   />
                   <span className="text-sm font-semibold text-ink">Deposit required</span>
@@ -182,7 +196,7 @@ export default function TreatmentControls({
                   min={0}
                   max={100000}
                   step={1}
-                  onChange={(v) => update(t.id, { depositAmount: v })}
+                  onChange={(v) => update(i, { depositAmount: v })}
                 />
               </div>
 
@@ -207,7 +221,7 @@ export default function TreatmentControls({
                       return (
                         <div key={p.id} className="flex items-center gap-1.5">
                           <button
-                            onClick={() => togglePractitioner(t, p.id)}
+                            onClick={() => togglePractitioner(t, i, p.id)}
                             className={`min-w-0 flex-1 rounded-xl border px-2.5 py-2 text-left text-xs font-semibold transition ${on ? "border-pine bg-pine/10 text-pine" : "border-line bg-white text-ink hover:border-pine/40"}`}
                           >
                             {on ? "✓ " : "+ "}
@@ -216,7 +230,9 @@ export default function TreatmentControls({
                           {on && perClinicianLengths && (
                             <select
                               value={minutes}
-                              onChange={(e) => setClinicianLength(t, p.id, Number(e.target.value))}
+                              onChange={(e) =>
+                                setClinicianLength(t, i, p.id, Number(e.target.value))
+                              }
                               aria-label={`Consultation length for ${p.name}`}
                               className="shrink-0 rounded-xl border border-line bg-white px-1.5 py-2 text-xs tabular-nums outline-none focus:border-pine/40"
                             >

@@ -292,14 +292,56 @@ function treatmentControlsFrom(value: unknown): TreatmentControl[] {
   const seen = new Set<string>();
   const out: TreatmentControl[] = [];
   for (const item of value) {
-    const treatment = treatmentControlFrom(item);
+    const raw = (item && typeof item === "object" ? item : {}) as Record<string, unknown>;
+    const treatment = treatmentControlFrom(raw);
+    if (!treatment.name) continue;
+
+    if (!str(raw.id)) {
+      // Left blank here and named by withNamedIds below, once every id this
+      // list already claims is known.
+      out.push({ ...treatment, id: "" });
+      continue;
+    }
     // A duplicate id would make two rows edit each other, so the later one is
     // dropped rather than silently merged.
-    if (!treatment.name || seen.has(treatment.id)) continue;
+    if (seen.has(treatment.id)) continue;
     seen.add(treatment.id);
     out.push(treatment);
   }
-  return out;
+  return withNamedIds(out);
+}
+
+/**
+ * Names any treatment that does not have an id yet, from what it is called.
+ *
+ * The id is the key the booking agent matches a lead's treatment on, so it has
+ * to mean something, and a row the practice has only just added has nothing to
+ * take it from but the name. Every id already in the list is reserved before
+ * any is derived, so a new "Implants" row cannot take the key of the saved
+ * Implants row and push it out, whichever order they arrive in.
+ *
+ * An id that is already set is never recomputed. Renaming a treatment after it
+ * has been saved must not silently re-key it, or the booking workflow would
+ * look up a treatment that no longer answers to that name.
+ *
+ * A derived id that collides is suffixed rather than dropped: two rows called
+ * "Whitening" are two treatments the practice has yet to tell apart, and
+ * dropping one would lose what they just typed.
+ */
+export function withNamedIds(treatments: TreatmentControl[]): TreatmentControl[] {
+  const taken = new Set(treatments.map((t) => t.id).filter(Boolean));
+  return treatments.map((t) => {
+    if (t.id) return t;
+    const base = treatmentControlId(t.name);
+    let id = base;
+    let suffix = 2;
+    while (taken.has(id)) {
+      id = `${base}-${suffix}`;
+      suffix += 1;
+    }
+    taken.add(id);
+    return { ...t, id };
+  });
 }
 
 export function miscFrom(value: unknown): MiscInfo {
