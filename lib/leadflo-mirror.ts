@@ -870,9 +870,13 @@ function clampLimit(value: unknown) {
 function treatmentFromLeadflo(treatmentType: string | null | undefined) {
   const value = (treatmentType ?? "").toLowerCase();
   if (value.includes("implant")) return "implants";
-  // Before the ortho test, which "invisalign" would otherwise match on "align".
-  if (value.includes("invisalign")) return "invisalign";
-  if (value.includes("ortho") || value.includes("align")) return "ortho";
+  // Dental Aesthetica's Leadflo records clear-aligner enquiries as "Ortho", and
+  // the practice has confirmed that for them it means Invisalign. Landing both
+  // on one slug is what lets the treatment config, the agent and the funnel
+  // speak of one treatment rather than two spellings of it.
+  if (value.includes("invisalign") || value.includes("ortho") || value.includes("align")) {
+    return "invisalign";
+  }
   if (value.includes("cosmetic")) return "cosmetic";
   if (value.includes("facial")) return "facial";
   if (value.includes("whiten")) return "whitening";
