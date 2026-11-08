@@ -75,7 +75,7 @@ function hasTreatmentControls(practice: DentalDashboardData["practice"]) {
  * setting up. A demo workspace with no clinic behind it would get a page of
  * empty controls.
  */
-const NATIVE_CONFIG_PRACTICES = new Set(["Dental Aesthetica"]);
+const NATIVE_CONFIG_PRACTICES = new Set(["Dental Aesthetica", "Leigh Dental Centre"]);
 
 function hasNativeConfig(practice: DentalDashboardData["practice"]) {
   return NATIVE_CONFIG_PRACTICES.has(practice?.name ?? "");
