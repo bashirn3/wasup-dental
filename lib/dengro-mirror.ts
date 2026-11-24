@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { aiBookingsOf } from "@/lib/ai-bookings";
 import { supabaseAdmin } from "@/lib/supabase";
 
 type SupabaseResult<T> = {
@@ -54,9 +55,8 @@ const LEAD_COLUMNS =
  * Mirror a practice whose leads arrive from Dengro.
  *
  * n8n's intake workflow writes each Dengro lead to one row of the practice's
- * leads table, and the outbound and Stripe workflows write the first message
- * and the booking onto that same row. So one read gives the lead, whether Jo
- * has messaged them and whether they hold an appointment.
+ * leads table, and the outbound workflow records Jo's first message on that same
+ * row. Who is booked comes from Jo's confirmations, found by the booking sync.
  */
 export async function mirrorDengroPractice(
   practiceId: string,
@@ -93,7 +93,8 @@ export async function mirrorDengroPractice(
     const rows = data ?? [];
 
     const now = new Date().toISOString();
-    const records = rows.map((row) => normalizeLead(row, practiceId, now));
+    const booked = aiBookingsOf(settings);
+    const records = rows.map((row) => normalizeLead(row, practiceId, now, booked));
     let leadsUpserted = 0;
     for (let index = 0; index < records.length; index += 500) {
       const chunk = records.slice(index, index + 500);
@@ -121,11 +122,10 @@ export async function mirrorDengroPractice(
   }
 }
 
-function normalizeLead(row: DengroLeadRow, practiceId: string, now: string) {
+function normalizeLead(row: DengroLeadRow, practiceId: string, now: string, booked: Record<string, string>) {
   const outbound = row.raw_data?.outbound ?? null;
   const dengro = row.raw_data?.dengro ?? null;
   const messaged = outbound?.status === "sent";
-  const booked = row.dentally_appointment_id !== null && row.dentally_appointment_id !== undefined;
   const enquiredAt = dengro?.lead_received ?? row.created_at ?? now;
   const name = [row.first_name, row.last_name].filter(Boolean).join(" ").trim();
 
@@ -135,7 +135,7 @@ function normalizeLead(row: DengroLeadRow, practiceId: string, now: string) {
     phone: row.number ? `+${row.number.replace(/\D/g, "")}` : null,
     email: row.email ?? null,
     treatment: treatmentFromDengro(row.treatment),
-    status: booked ? "booked" : messaged ? "engaged" : "new",
+    status: booked[String(row.id)] ? "booked" : messaged ? "engaged" : "new",
     source: row.raw_data?.source ?? SOURCE_SYSTEM,
     source_system: SOURCE_SYSTEM,
     external_id: String(row.id),
