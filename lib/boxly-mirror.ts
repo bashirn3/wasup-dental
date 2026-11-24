@@ -55,6 +55,7 @@ type BoxlySettings = {
   legacySupabaseUrlEnv: string;
   legacySupabaseServiceRoleKeyEnv: string;
   chatHistorySessionPrefix?: string;
+  bookingTable?: string;
 };
 
 export type BoxlyMirrorOptions = {
@@ -123,8 +124,9 @@ export async function mirrorBoxlyPractice(
     const { rows, count } = await loadLegacyLeads(legacy, settings.legacyLeadsTable, limit);
     sourceCount = count;
     const now = new Date().toISOString();
+    const booked = await loadBookedLeads(legacy, ours, practiceId, settings.bookingTable);
     const leadRecords = rows
-      .map((row) => normalizeLead(row, practiceId, now))
+      .map((row) => normalizeLead(row, practiceId, now, booked))
       .filter((row): row is NonNullable<ReturnType<typeof normalizeLead>> => {
         if (row) return true;
         skipped += 1;
@@ -139,6 +141,8 @@ export async function mirrorBoxlyPractice(
       if (error) throw new Error(`lead_upsert_failed:${error.code ?? error.message}`);
       leadsUpserted += chunk.length;
     }
+
+    await applyBookedStatus(ours, practiceId, booked);
 
     if (options.includeConversations) {
       messagesUpserted = await upsertConversations(ours, practiceId, rows);
@@ -227,6 +231,10 @@ function normalizeSettings(settings: Record<string, unknown> | null): BoxlySetti
     legacySupabaseServiceRoleKeyEnv,
     chatHistorySessionPrefix:
       typeof settings?.chatHistorySessionPrefix === "string" ? settings.chatHistorySessionPrefix : undefined,
+    bookingTable:
+      typeof settings?.bookingTable === "string" && /^[a-zA-Z0-9_-]+$/.test(settings.bookingTable)
+        ? settings.bookingTable
+        : undefined,
   };
 }
 
@@ -260,20 +268,136 @@ async function loadLegacyLeads(client: SupabaseClient, table: string, limit: num
   return { rows: data ?? [], count: count ?? null };
 }
 
-function normalizeLead(row: BoxlyLeadRow, practiceId: string, now: string) {
+type BookedLeads = {
+  /** False when the booking table could not be read this run. */
+  known: boolean;
+  leadIds: Set<string>;
+  phones: Set<string>;
+};
+
+/**
+ * Who has paid a deposit, from the table the Stripe workflow writes.
+ *
+ * Paying is what books the slot: the workflow books Dentally straight after, and
+ * that table keeps no appointment id to check against. Rows are keyed by the
+ * Boxly lead id, except the earliest ones, which stored the phone number there
+ * instead.
+ *
+ * If the table cannot be read, leads already marked booked stay booked, so one
+ * failed read does not empty the count until the next run.
+ */
+async function loadBookedLeads(
+  legacy: SupabaseClient,
+  ours: SupabaseClient,
+  practiceId: string,
+  table: string | undefined,
+): Promise<BookedLeads> {
+  const booked: BookedLeads = { known: false, leadIds: new Set(), phones: new Set() };
+  if (!table) return booked;
+
+  const { data, error } = (await legacy
+    .from(table)
+    .select("boxly_lead_id")
+    .eq("deposit_status", "paid")) as SupabaseResult<Array<{ boxly_lead_id: string | null }>>;
+
+  if (error) {
+    const { data: stored } = (await ours
+      .from("leads")
+      .select("external_id")
+      .eq("practice_id", practiceId)
+      .eq("source_system", "boxly")
+      .eq("status", "booked")) as SupabaseResult<Array<{ external_id: string }>>;
+    for (const lead of stored ?? []) booked.leadIds.add(lead.external_id);
+    return booked;
+  }
+
+  booked.known = true;
+  for (const row of data ?? []) {
+    const id = row.boxly_lead_id?.trim();
+    if (!id) continue;
+    if (/^\+?\d+$/.test(id)) booked.phones.add(phoneKey(id));
+    else booked.leadIds.add(id);
+  }
+  return booked;
+}
+
+/**
+ * Bring every lead's booked status in line with the deposits, not only the
+ * leads in this run's window. The scheduled run only re-reads the newest
+ * enquiries, and most deposits were paid by patients who enquired long before.
+ * A lead that is no longer paid goes back to engaged: it took a conversation to
+ * get them to the deposit link.
+ */
+async function applyBookedStatus(ours: SupabaseClient, practiceId: string, booked: BookedLeads) {
+  if (!booked.known) return;
+
+  const matched = new Map<string, string>();
+  const leadIds = [...booked.leadIds];
+  for (let index = 0; index < leadIds.length; index += 200) {
+    const { data, error } = (await ours
+      .from("leads")
+      .select("id, status")
+      .eq("practice_id", practiceId)
+      .eq("source_system", "boxly")
+      .in("external_id", leadIds.slice(index, index + 200))) as SupabaseResult<Array<{ id: string; status: string }>>;
+    if (error) throw new Error(`booked_lookup_failed:${error.code ?? error.message}`);
+    for (const lead of data ?? []) matched.set(lead.id, lead.status);
+  }
+  if (booked.phones.size) {
+    const { data, error } = (await ours
+      .from("leads")
+      .select("id, status")
+      .eq("practice_id", practiceId)
+      .eq("source_system", "boxly")
+      .in("phone", [...booked.phones].map((key) => `+44${key}`))) as SupabaseResult<
+      Array<{ id: string; status: string }>
+    >;
+    if (error) throw new Error(`booked_lookup_failed:${error.code ?? error.message}`);
+    for (const lead of data ?? []) matched.set(lead.id, lead.status);
+  }
+
+  const { data: stored, error } = (await ours
+    .from("leads")
+    .select("id")
+    .eq("practice_id", practiceId)
+    .eq("source_system", "boxly")
+    .eq("status", "booked")) as SupabaseResult<Array<{ id: string }>>;
+  if (error) throw new Error(`booked_lookup_failed:${error.code ?? error.message}`);
+
+  const toBook = [...matched].filter(([, status]) => status !== "booked").map(([id]) => id);
+  const toUnbook = (stored ?? []).map((lead) => lead.id).filter((id) => !matched.has(id));
+  for (const [ids, status] of [
+    [toBook, "booked"],
+    [toUnbook, "engaged"],
+  ] as const) {
+    if (!ids.length) continue;
+    const { error: updateError } = await ours.from("leads").update({ status }).in("id", ids);
+    if (updateError) throw new Error(`booked_update_failed:${updateError.code ?? updateError.message}`);
+  }
+}
+
+/** The last ten digits, so +44 7…, 44 7… and 07… compare equal. */
+function phoneKey(value: string | null | undefined) {
+  return (value ?? "").replace(/\D/g, "").slice(-10);
+}
+
+function normalizeLead(row: BoxlyLeadRow, practiceId: string, now: string, booked: BookedLeads) {
   const externalId = row.boxly_lead_id ?? null;
   if (!externalId) return null;
   const fullName =
     row.full_name || [row.first_name, row.last_name].filter(Boolean).join(" ").trim() || null;
   const aiActioned = Boolean(row.ai_actioned || row.actioned);
+  const phone = row.phone_e164 ?? row.phone_number ?? null;
+  const isBooked =
+    booked.leadIds.has(externalId) || Boolean(phone && booked.phones.has(phoneKey(phone)));
 
   return {
     practice_id: practiceId,
     name: fullName ?? "Unknown patient",
-    phone: row.phone_e164 ?? row.phone_number ?? null,
+    phone,
     email: row.email ?? null,
     treatment: treatmentFromBox(row.box_name),
-    status: aiActioned ? "engaged" : "new",
+    status: isBooked ? "booked" : aiActioned ? "engaged" : "new",
     source: row.lead_source ?? "boxly",
     source_system: "boxly",
     external_id: externalId,

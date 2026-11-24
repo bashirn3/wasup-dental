@@ -261,19 +261,36 @@ export async function mirrorLeadfloPractice(
     // cannot be read the leads still mirror; they just stay at "engaged", and
     // the reason is recorded on the run rather than thrown away.
     let booked = new Set<string>();
+    let bookingKnown = false;
     try {
       const evidence = await loadBookingEvidence(settings);
       booked = evidence.numbers;
+      bookingKnown = true;
       await recordBookingEvidence(ours, practiceId, evidence);
     } catch (bookingError) {
       bookingSkipped =
         bookingError instanceof Error ? bookingError.message : String(bookingError);
     }
 
+    // A patient who enquired more than once has one lead per enquiry but one
+    // appointment, which belongs to the newest enquiry.
+    const bookedLeadByPhone = new Map<string, (typeof records)[number]>();
     for (const record of records) {
       const digits = digitsOf(record.phone);
-      const derived = digits && booked.has(digits) ? "booked" : record.status;
-      record.status = resolveStatus(derived, existing.get(record.external_id)?.status);
+      if (!digits || !booked.has(digits)) continue;
+      const current = bookedLeadByPhone.get(digits);
+      if (!current || record.updated_at > current.updated_at) bookedLeadByPhone.set(digits, record);
+    }
+
+    for (const record of records) {
+      const stored = existing.get(record.external_id)?.status;
+      if (bookedLeadByPhone.get(digitsOf(record.phone)) === record) {
+        record.status = "booked";
+      } else if (stored === "booked" && !bookingKnown) {
+        record.status = stored;
+      } else {
+        record.status = resolveStatus(record.status, stored === "booked" ? "engaged" : stored);
+      }
     }
 
     const leadIds = new Map(
@@ -686,6 +703,9 @@ const STATUS_RANK: Record<string, number> = { new: 0, engaged: 1, booked: 2 };
  * backwards. Clearing a lead's outbound flag to re-run a demo does not unmake
  * the conversation, and demoting them to "new" is what dropped them out of the
  * Activity tab. A status we do not recognise was set by hand, so it is left be.
+ *
+ * Booked is the exception and is decided by the caller from the booking table
+ * each run, so a cancelled or never-made appointment stops counting.
  */
 function resolveStatus(derived: string, stored: string | null | undefined) {
   if (!stored) return derived;

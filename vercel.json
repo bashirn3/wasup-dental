@@ -13,6 +13,10 @@
       "schedule": "*/5 * * * *"
     },
     {
+      "path": "/api/import/dengro/scheduled",
+      "schedule": "*/5 * * * *"
+    },
+    {
       "path": "/api/cron/funnel-snapshot",
       "schedule": "0 5 * * *"
     }
