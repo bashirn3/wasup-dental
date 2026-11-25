@@ -8,7 +8,7 @@ import {
 
 export const dynamic = "force-dynamic";
 
-const PRACTICE_KEYS: PracticeKey[] = ["regent", "nuyu", "dental_aesthetica"];
+const PRACTICE_KEYS: PracticeKey[] = ["regent", "nuyu", "dental_aesthetica", "leigh"];
 
 export async function GET(req: NextRequest) {
   const access = await resolveFunnelAccess();

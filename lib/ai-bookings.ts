@@ -181,7 +181,7 @@ async function loadEngagedLeads(ours: SupabaseClient, practiceId: string, source
 }
 
 /** Agents save either plain text or their structured output as JSON. */
-function replyText(content: unknown): string {
+export function replyText(content: unknown): string {
   let value: unknown = content;
   if (typeof value === "string" && value.trimStart().startsWith("{")) {
     try {

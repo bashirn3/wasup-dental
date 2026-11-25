@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import AccountMenu from "@/components/auth/AccountMenu";
 
-type PracticeKey = "regent" | "nuyu" | "dental_aesthetica";
+type PracticeKey = "regent" | "nuyu" | "dental_aesthetica" | "leigh";
 type StatusFilter = "all" | "replied" | "booked" | "treatment" | "paid";
 type DonutDisplayMode = "number" | "percent";
 

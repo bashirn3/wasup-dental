@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import type { AttributionConfidence, FunnelLeadRow, FunnelNote } from "./admin-attribution-funnel";
+import type { AttributionConfidence, FunnelLeadRow, FunnelNote, PracticeKey } from "./admin-attribution-funnel";
 import { loadBookingSourceAccess } from "./leadflo-mirror";
 import { supabaseAdmin } from "./supabase";
 
@@ -24,8 +24,6 @@ import { supabaseAdmin } from "./supabase";
 
 export const DENTAL_AESTHETICA_PRACTICE_NAME = "Dental Aesthetica";
 
-const PRACTICE_KEY = "dental_aesthetica";
-const PRACTICE_LABEL = DENTAL_AESTHETICA_PRACTICE_NAME;
 const PAGE_SIZE = 1000;
 
 /**
@@ -35,6 +33,15 @@ const PAGE_SIZE = 1000;
  * never as a per-consult value, which would be a fee this practice never charges.
  */
 export const DENTAL_AESTHETICA_CONSULT_VALUE = 0;
+
+/** A practice whose WhatsApp workflow books into Dentally after a deposit. */
+export type WasupFunnelPractice = { key: PracticeKey; label: string; consultValue: number };
+
+const DENTAL_AESTHETICA: WasupFunnelPractice = {
+  key: "dental_aesthetica",
+  label: DENTAL_AESTHETICA_PRACTICE_NAME,
+  consultValue: DENTAL_AESTHETICA_CONSULT_VALUE,
+};
 
 type LegacyPayload = {
   enquiredAt?: unknown;
@@ -49,7 +56,7 @@ type LegacyPayload = {
   isTestName?: unknown;
 };
 
-type LeadRow = {
+export type LeadRow = {
   id: string;
   name: string | null;
   phone: string | null;
@@ -65,7 +72,10 @@ type MessageRow = {
   created_at: string | null;
 };
 
-type BookingRow = {
+export const BOOKING_COLUMNS =
+  "number, dentally_appointment_id, dentally_patient_id, deposit_status, deposit_amount, deposit_paid_at, chosen_start_time, booking_error";
+
+export type BookingRow = {
   number: string | null;
   dentally_appointment_id: string | number | null;
   dentally_patient_id: string | number | null;
@@ -76,7 +86,7 @@ type BookingRow = {
   booking_error: string | null;
 };
 
-type Conversation = {
+export type Conversation = {
   outbound: number;
   inbound: number;
   firstOutboundAt: string | null;
@@ -118,7 +128,12 @@ export async function buildDentalAestheticaRows(): Promise<DentalAestheticaFunne
       continue;
     }
     rows.push(
-      toFunnelRow(lead, conversations.get(lead.id) ?? emptyConversation(), bookings.get(digitsOf(lead.phone))),
+      toFunnelRow(
+        lead,
+        conversations.get(lead.id) ?? emptyConversation(),
+        bookings.get(digitsOf(lead.phone)),
+        DENTAL_AESTHETICA,
+      ),
     );
   }
 
@@ -151,7 +166,7 @@ export async function getDentalAestheticaNotes(leadId: string): Promise<FunnelNo
   }));
 }
 
-async function fetchLeads(practiceId: string): Promise<LeadRow[]> {
+export async function fetchLeads(practiceId: string): Promise<LeadRow[]> {
   const supabase = supabaseAdmin();
   if (!supabase) throw new Error("storage_unavailable");
 
@@ -207,15 +222,14 @@ async function fetchBookings(practiceId: string): Promise<Map<string, BookingRow
   if (!access) return new Map();
 
   const bookings = createClient(access.url, access.key, { auth: { persistSession: false } });
-  const { data, error } = await bookings
-    .from(access.table)
-    .select(
-      "number, dentally_appointment_id, dentally_patient_id, deposit_status, deposit_amount, deposit_paid_at, chosen_start_time, booking_error",
-    );
+  const { data, error } = await bookings.from(access.table).select(BOOKING_COLUMNS);
   if (error) throw new Error(`booking_lookup_failed:${error.code ?? error.message}`);
+  return bookingsByNumber((data ?? []) as BookingRow[]);
+}
 
+export function bookingsByNumber(rows: BookingRow[]): Map<string, BookingRow> {
   const byNumber = new Map<string, BookingRow>();
-  for (const row of (data ?? []) as BookingRow[]) {
+  for (const row of rows) {
     const digits = digitsOf(row.number);
     if (!digits) continue;
     // A patient who books again gets a fresh row; keep whichever proves the most.
@@ -232,7 +246,12 @@ function bookingRank(row: BookingRow): number {
   return 0;
 }
 
-function toFunnelRow(lead: LeadRow, conversation: Conversation, booking: BookingRow | undefined): FunnelLeadRow {
+export function toFunnelRow(
+  lead: LeadRow,
+  conversation: Conversation,
+  booking: BookingRow | undefined,
+  practice: WasupFunnelPractice,
+): FunnelLeadRow {
   const legacy = lead.external_payload?.legacy ?? {};
   const appointmentId = booking?.dentally_appointment_id ? String(booking.dentally_appointment_id) : null;
   const depositPaidAt = booking?.deposit_paid_at ?? null;
@@ -242,9 +261,9 @@ function toFunnelRow(lead: LeadRow, conversation: Conversation, booking: Booking
   const aiActionedAt = conversation.firstOutboundAt ?? isoOrNull(legacy.outboundSentAt);
 
   return {
-    id: `${PRACTICE_KEY}:${lead.id}`,
-    practice: PRACTICE_KEY,
-    practiceLabel: PRACTICE_LABEL,
+    id: `${practice.key}:${lead.id}`,
+    practice: practice.key,
+    practiceLabel: practice.label,
     boxlyLeadId: lead.id,
     patientName: lead.name?.trim() || "Unknown",
     phone: lead.phone ?? null,
@@ -262,8 +281,7 @@ function toFunnelRow(lead: LeadRow, conversation: Conversation, booking: Booking
     lastUpdatedAt: conversation.lastAt ?? isoOrNull(legacy.lastUpdatedAt) ?? lead.updated_at,
     actionedNote: null,
     consultBooked,
-    // No per-consult value: this practice charges no consultation fee.
-    consultBookingValue: DENTAL_AESTHETICA_CONSULT_VALUE,
+    consultBookingValue: consultBooked ? practice.consultValue : 0,
     bookedUsingSystem: consultBooked,
     attributionConfidence: confidenceOf(appointmentId, depositPaidAt, booking),
     attributionReason: reasonOf(appointmentId, depositPaidAt, booking),
@@ -340,7 +358,7 @@ function sequenceOf(
  * Identity is the phone number first, since that is what the workflow books and
  * charges against.
  */
-function mergeRepeatEnquiries(rows: FunnelLeadRow[]): FunnelLeadRow[] {
+export function mergeRepeatEnquiries(rows: FunnelLeadRow[]): FunnelLeadRow[] {
   const byPatient = new Map<string, { row: FunnelLeadRow; enquiries: number }>();
 
   for (const row of rows) {
@@ -402,12 +420,12 @@ function isTestLead(lead: LeadRow): boolean {
   return lead.external_payload?.legacy?.isTestName === true;
 }
 
-function emptyConversation(): Conversation {
+export function emptyConversation(): Conversation {
   return { outbound: 0, inbound: 0, firstOutboundAt: null, lastAt: null };
 }
 
 /** Last ten digits, so a stored 0771 and a stored +44771 are the same patient. */
-function digitsOf(value: string | number | null | undefined): string {
+export function digitsOf(value: string | number | null | undefined): string {
   const digits = String(value ?? "").replace(/\D/g, "");
   return digits.length > 10 ? digits.slice(-10) : digits;
 }
