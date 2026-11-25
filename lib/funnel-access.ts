@@ -17,7 +17,7 @@
 const INTERNAL_ADMIN_DEFAULTS = [
   "bashir@tryrapidscreen.com",
   "arslan@tryrapidscreen.com",
-  "asif@smilefast.com",
+  "hello@dentopia.marketing",
 ];
 
 /**
