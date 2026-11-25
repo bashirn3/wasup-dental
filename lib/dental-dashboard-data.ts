@@ -723,6 +723,8 @@ function withExpectedIntegrations(
   return [...integrations, ...absent];
 }
 
+// All of them, not the most recent few: the Activity filters run in the browser
+// over this list, so a capped list hid most booked and replied leads.
 function buildActivityLeads(leads: LeadRow[], lastOutboundByLead: Map<string, string>): DentalLead[] {
   return leads
     .filter((lead) => {
@@ -730,7 +732,6 @@ function buildActivityLeads(leads: LeadRow[], lastOutboundByLead: Map<string, st
       return meta.actioned || meta.aiActioned || lead.status === "engaged" || lead.status === "booked";
     })
     .sort((a, b) => compareActivityDesc(activityOrderKey(a, lastOutboundByLead), activityOrderKey(b, lastOutboundByLead)))
-    .slice(0, 200)
     .map((lead) => mapLead(lead, [], lastOutboundByLead.get(lead.id) ?? null));
 }
 
