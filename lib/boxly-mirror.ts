@@ -62,6 +62,7 @@ export type BoxlyMirrorOptions = {
   integrationId?: string | null;
   limit?: number;
   includeConversations?: boolean;
+  onlyActioned?: boolean;
 };
 
 export type BoxlyMirrorResult = {
@@ -121,7 +122,12 @@ export async function mirrorBoxlyPractice(
     const limit = clampLimit(options.limit);
     const configSnapshot = await loadLegacyConfig(legacy, settings.configNamespace);
     configKeysMirrored = Object.keys(configSnapshot.values).length;
-    const { rows, count } = await loadLegacyLeads(legacy, settings.legacyLeadsTable, limit);
+    const { rows, count } = await loadLegacyLeads(
+      legacy,
+      settings.legacyLeadsTable,
+      limit,
+      Boolean(options.onlyActioned),
+    );
     sourceCount = count;
     const now = new Date().toISOString();
     const booked = new Set(Object.keys(aiBookingsOf(integration.settings)));
@@ -250,15 +256,27 @@ async function loadLegacyConfig(client: SupabaseClient, namespace: string | unde
   return { namespace, values, updatedAt };
 }
 
-async function loadLegacyLeads(client: SupabaseClient, table: string, limit: number) {
-  const { data, error, count } = (await client
-    .from(table)
-    .select(LEAD_COLUMNS, { count: "exact" })
-    .order("became_lead_at", { ascending: false, nullsFirst: false })
-    .limit(limit)) as SupabaseResult<BoxlyLeadRow[]>;
+async function loadLegacyLeads(client: SupabaseClient, table: string, limit: number, onlyActioned: boolean) {
+  const rows: BoxlyLeadRow[] = [];
+  let count: number | null = null;
+  for (let from = 0; from < limit; from += 1000) {
+    let query = client
+      .from(table)
+      .select(LEAD_COLUMNS, { count: from === 0 ? "exact" : undefined })
+      .order("became_lead_at", { ascending: false, nullsFirst: false })
+      .order("boxly_lead_id", { ascending: true });
+    if (onlyActioned) query = query.or("ai_actioned.is.true,actioned.is.true");
+    const { data, error, count: total } = (await query.range(
+      from,
+      Math.min(from + 1000, limit) - 1,
+    )) as SupabaseResult<BoxlyLeadRow[]> & { count: number | null };
 
-  if (error) throw new Error(`legacy_leads_read_failed:${error.code ?? error.message}`);
-  return { rows: data ?? [], count: count ?? null };
+    if (error) throw new Error(`legacy_leads_read_failed:${error.code ?? error.message}`);
+    if (from === 0) count = total ?? null;
+    rows.push(...(data ?? []));
+    if ((data ?? []).length < 1000) break;
+  }
+  return { rows, count };
 }
 
 /**

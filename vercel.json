@@ -9,6 +9,10 @@
       "schedule": "* * * * *"
     },
     {
+      "path": "/api/import/boxly/scheduled?sweep=actioned",
+      "schedule": "7,37 * * * *"
+    },
+    {
       "path": "/api/import/leadflo/scheduled",
       "schedule": "*/5 * * * *"
     },
