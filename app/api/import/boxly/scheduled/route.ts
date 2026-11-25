@@ -48,16 +48,19 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "integration_lookup_failed", detail: error.code }, { status: 500 });
   }
 
+  // The every-minute run syncs only the newest enquiries (by became_lead_at) so it
+  // stays fast and never overlaps. The agent also reaches older enquiries, so the
+  // half-hourly `sweep=actioned` run re-reads every AI-actioned lead.
+  const sweepActioned = req.nextUrl.searchParams.get("sweep") === "actioned";
+
   const results = [];
   for (const integration of data ?? []) {
     try {
       const result = await mirrorBoxlyPractice(integration.practice_id, {
         integrationId: integration.id,
-        // Runs every minute: sync the newest enquiries (by became_lead_at) so each
-        // run stays fast and never overlaps. New leads always sort to the top of
-        // this window; deeper backfills use scripts/sync-boxly.mjs.
-        limit: 300,
+        limit: sweepActioned ? 5000 : 300,
         includeConversations: true,
+        onlyActioned: sweepActioned,
       });
       results.push({ ok: true, integrationId: integration.id, result });
     } catch (syncError) {

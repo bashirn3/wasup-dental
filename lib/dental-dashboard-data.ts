@@ -46,6 +46,7 @@ type LeadRow = {
   last_synced_at: string | null;
   updated_at: string;
   external_payload: JsonRecord | null;
+  client_replied?: boolean;
 };
 
 type JsonRecord = Record<string, unknown>;
@@ -161,7 +162,7 @@ export async function getDentalDashboardData(
     .eq("practice_id", practiceId)
     .order("created_at", { ascending: true })) as SupabaseResult<WorkflowRow[]>;
 
-  const [leadTotal, aiActioned, needsHuman, booked, facets, activityRowsResult] = await Promise.all([
+  const [leadTotal, aiActioned, needsHuman, booked, facets] = await Promise.all([
     supabase
       .from("leads")
       .select("id", { count: "exact", head: true })
@@ -184,20 +185,19 @@ export async function getDentalDashboardData(
       .select("id", { count: "exact", head: true })
       .eq("practice_id", practiceId)
       .eq("status", "booked"),
-    supabase
-      .from("leads")
-      .select(
-        "id, practice_id, name, phone, email, treatment, status, source, source_system, box_name, box_stage, needs_human, ai_confidence, last_synced_at, updated_at, external_payload",
-      )
-      .eq("practice_id", practiceId)
-      .limit(10000),
-    loadActivityRows(supabase, practiceId),
+    loadLeadRows(supabase, practiceId),
   ]);
 
   const messageRows = messages ?? [];
   const mappedIntegrations = (integrations ?? []).map(mapIntegration);
-  const allLeadRows = (facets.data ?? []) as LeadRow[];
-  const activityRowsRaw = activityRowsResult;
+  const activityRowsRaw = facets.filter((lead) => lead.status === "engaged" || lead.status === "booked");
+  const replied = await loadRepliedLeadIds(
+    supabase,
+    practiceId,
+    activityRowsRaw.map((lead) => lead.id),
+  );
+  const allLeadRows = markReplied(facets, replied);
+  markReplied(leadRows, replied);
   // "When our agent last messaged them" is the source of truth for Activity order.
   const lastOutboundByLead = await fetchLastOutboundByLead(
     supabase,
@@ -409,8 +409,51 @@ function buildAnalytics(rows: LeadRow[]): DentalDashboardData["analytics"] {
   };
 }
 
-const ANALYTICS_LEAD_SELECT =
-  "id, practice_id, name, phone, email, treatment, status, source, source_system, box_name, box_stage, needs_human, ai_confidence, last_synced_at, updated_at, external_payload";
+const RAW_META_KEYS = [
+  "unseen_reply_count",
+  "conversation_count",
+  "lead_summary",
+  "urgency",
+  "actioned_note",
+  "actionedNote",
+  "entry_point",
+  "entryPoint",
+] as const;
+
+// The raw Boxly record is most of each lead's payload; read only the keys
+// extractLeadMeta uses from it.
+const ANALYTICS_LEAD_SELECT = [
+  "id, practice_id, name, phone, email, treatment, status, source, source_system, box_name, box_stage, needs_human, ai_confidence, last_synced_at, updated_at",
+  "legacy:external_payload->legacy",
+  "summary:external_payload->summary",
+  "raw_linked_summary:external_payload->raw->linked_leads->0->lead_summary",
+  ...RAW_META_KEYS.map((key) => `raw_${key}:external_payload->raw->${key}`),
+].join(", ");
+
+type AnalyticsLeadRow = Omit<LeadRow, "external_payload"> & Record<string, unknown>;
+
+function fromAnalyticsRow(row: AnalyticsLeadRow): LeadRow {
+  const raw: JsonRecord = { linked_leads: [{ lead_summary: row.raw_linked_summary ?? null }] };
+  for (const key of RAW_META_KEYS) raw[key] = row[`raw_${key}`] ?? null;
+  return {
+    id: row.id,
+    practice_id: row.practice_id,
+    name: row.name,
+    phone: row.phone,
+    email: row.email,
+    treatment: row.treatment,
+    status: row.status,
+    source: row.source,
+    source_system: row.source_system,
+    box_name: row.box_name,
+    box_stage: row.box_stage,
+    needs_human: row.needs_human,
+    ai_confidence: row.ai_confidence,
+    last_synced_at: row.last_synced_at,
+    updated_at: row.updated_at,
+    external_payload: { legacy: row.legacy ?? null, summary: row.summary ?? null, raw } as JsonRecord,
+  };
+}
 
 export type AnalyticsRangeKey =
   | "today"
@@ -527,13 +570,9 @@ export async function getDentalAnalytics(
     };
   }
 
-  const { data } = (await supabase
-    .from("leads")
-    .select(ANALYTICS_LEAD_SELECT)
-    .eq("practice_id", practiceId)
-    .limit(10000)) as SupabaseResult<LeadRow[]>;
-
-  const rows = data ?? [];
+  const rows = await loadLeadRows(supabase, practiceId);
+  const actionedIds = rows.filter((row) => row.status === "engaged" || row.status === "booked").map((row) => row.id);
+  markReplied(rows, await loadRepliedLeadIds(supabase, practiceId, actionedIds));
   const fromTs = range.from ? new Date(range.from).getTime() : null;
   const toTs = new Date(range.to).getTime();
   const filtered = fromTs
@@ -776,29 +815,74 @@ function compareActivityDesc(a: string | null, b: string | null): number {
  * case ordering falls back to actioned_at (still correct, just Boxly-equivalent).
  */
 /**
- * Every lead the agent has spoken to, in pages. One request is capped at 1,000
- * rows, and Nuyu alone has more engaged leads than that, so a single read
- * showed an arbitrary slice and left most of its booked patients out.
+ * A practice's leads in pages. One request is capped at 1,000 rows, and Nuyu
+ * has nearly ten thousand, so a single read counted an arbitrary slice.
  */
-async function loadActivityRows(
+async function loadLeadRows(
   supabase: NonNullable<ReturnType<typeof supabaseAdmin>>,
   practiceId: string,
 ): Promise<LeadRow[]> {
-  const rows: LeadRow[] = [];
-  for (let from = 0; ; from += 1000) {
-    const { data, error } = (await supabase
+  const page = (from: number, withCount: boolean) =>
+    supabase
       .from("leads")
-      .select(
-        "id, practice_id, name, phone, email, treatment, status, source, source_system, box_name, box_stage, needs_human, ai_confidence, last_synced_at, updated_at, external_payload",
-      )
+      .select(ANALYTICS_LEAD_SELECT, withCount ? { count: "exact" } : undefined)
       .eq("practice_id", practiceId)
-      .in("status", ["engaged", "booked"])
       .order("id")
-      .range(from, from + 999)) as SupabaseResult<LeadRow[]>;
-    if (error) return rows;
-    rows.push(...(data ?? []));
-    if ((data ?? []).length < 1000) return rows;
+      .range(from, from + 999) as unknown as Promise<
+      SupabaseResult<AnalyticsLeadRow[]> & { count: number | null }
+    >;
+
+  const first = await page(0, true);
+  const rows = (first.data ?? []).map(fromAnalyticsRow);
+  const offsets: number[] = [];
+  for (let from = 1000; from < (first.count ?? 0); from += 1000) offsets.push(from);
+  for (const result of await Promise.all(offsets.map((from) => page(from, false)))) {
+    rows.push(...(result.data ?? []).map(fromAnalyticsRow));
   }
+  return rows;
+}
+
+/**
+ * Leads (of those given) with at least one inbound patient message. "Client
+ * responded" means the patient wrote back in the conversation, not Boxly's
+ * client_replied flag, which also counts replies to staff before the agent.
+ */
+async function loadRepliedLeadIds(
+  supabase: NonNullable<ReturnType<typeof supabaseAdmin>>,
+  practiceId: string,
+  leadIds: string[],
+): Promise<Set<string>> {
+  const replied = new Set<string>();
+  const chunks: string[][] = [];
+  for (let i = 0; i < leadIds.length; i += 50) chunks.push(leadIds.slice(i, i + 50));
+
+  for (let i = 0; i < chunks.length; i += 6) {
+    await Promise.all(
+      chunks.slice(i, i + 6).map(async (chunk) => {
+        for (let from = 0; ; from += 1000) {
+          const { data, error } = (await supabase
+            .from("messages")
+            .select("lead_id")
+            .eq("practice_id", practiceId)
+            .eq("direction", "inbound")
+            .in("lead_id", chunk)
+            .order("id")
+            .range(from, from + 999)) as SupabaseResult<Array<{ lead_id: string }>>;
+          if (error) return;
+          for (const row of data ?? []) replied.add(row.lead_id);
+          if ((data ?? []).length < 1000) return;
+        }
+      }),
+    );
+  }
+  return replied;
+}
+
+function markReplied(rows: LeadRow[], replied: Set<string>): LeadRow[] {
+  for (const row of rows) {
+    row.client_replied = (row.status === "engaged" || row.status === "booked") && replied.has(row.id);
+  }
+  return rows;
 }
 
 async function fetchLastOutboundByLead(
@@ -850,7 +934,11 @@ function buildSourceHealth(integrations: DentalIntegration[]): DentalDashboardDa
   };
 }
 
-function extractLeadMeta(row: { status?: string | null; external_payload?: JsonRecord | null }) {
+function extractLeadMeta(row: {
+  status?: string | null;
+  external_payload?: JsonRecord | null;
+  client_replied?: boolean;
+}) {
   const payload = recordValue(row.external_payload);
   const legacy = recordValue(payload.legacy);
   const raw = recordValue(payload.raw);
@@ -869,10 +957,7 @@ function extractLeadMeta(row: { status?: string | null; external_payload?: JsonR
   return {
     aiActioned,
     actioned,
-    clientReplied:
-      boolValue(raw.client_replied) ||
-      boolValue(raw.clientReplied) ||
-      Boolean(numberValue(raw.unseen_reply_count)),
+    clientReplied: row.client_replied === true,
     unseenReplyCount: numberValue(raw.unseen_reply_count) ?? 0,
     conversationCount:
       numberValue(legacy.conversationCount) ??
