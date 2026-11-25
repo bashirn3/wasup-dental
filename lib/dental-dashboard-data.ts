@@ -409,8 +409,51 @@ function buildAnalytics(rows: LeadRow[]): DentalDashboardData["analytics"] {
   };
 }
 
-const ANALYTICS_LEAD_SELECT =
-  "id, practice_id, name, phone, email, treatment, status, source, source_system, box_name, box_stage, needs_human, ai_confidence, last_synced_at, updated_at, external_payload";
+const RAW_META_KEYS = [
+  "unseen_reply_count",
+  "conversation_count",
+  "lead_summary",
+  "urgency",
+  "actioned_note",
+  "actionedNote",
+  "entry_point",
+  "entryPoint",
+] as const;
+
+// The raw Boxly record is most of each lead's payload; read only the keys
+// extractLeadMeta uses from it.
+const ANALYTICS_LEAD_SELECT = [
+  "id, practice_id, name, phone, email, treatment, status, source, source_system, box_name, box_stage, needs_human, ai_confidence, last_synced_at, updated_at",
+  "legacy:external_payload->legacy",
+  "summary:external_payload->summary",
+  "raw_linked_summary:external_payload->raw->linked_leads->0->lead_summary",
+  ...RAW_META_KEYS.map((key) => `raw_${key}:external_payload->raw->${key}`),
+].join(", ");
+
+type AnalyticsLeadRow = Omit<LeadRow, "external_payload"> & Record<string, unknown>;
+
+function fromAnalyticsRow(row: AnalyticsLeadRow): LeadRow {
+  const raw: JsonRecord = { linked_leads: [{ lead_summary: row.raw_linked_summary ?? null }] };
+  for (const key of RAW_META_KEYS) raw[key] = row[`raw_${key}`] ?? null;
+  return {
+    id: row.id,
+    practice_id: row.practice_id,
+    name: row.name,
+    phone: row.phone,
+    email: row.email,
+    treatment: row.treatment,
+    status: row.status,
+    source: row.source,
+    source_system: row.source_system,
+    box_name: row.box_name,
+    box_stage: row.box_stage,
+    needs_human: row.needs_human,
+    ai_confidence: row.ai_confidence,
+    last_synced_at: row.last_synced_at,
+    updated_at: row.updated_at,
+    external_payload: { legacy: row.legacy ?? null, summary: row.summary ?? null, raw } as JsonRecord,
+  };
+}
 
 export type AnalyticsRangeKey =
   | "today"
@@ -786,15 +829,15 @@ async function loadLeadRows(
       .eq("practice_id", practiceId)
       .order("id")
       .range(from, from + 999) as unknown as Promise<
-      SupabaseResult<LeadRow[]> & { count: number | null }
+      SupabaseResult<AnalyticsLeadRow[]> & { count: number | null }
     >;
 
   const first = await page(0, true);
-  const rows = [...(first.data ?? [])];
+  const rows = (first.data ?? []).map(fromAnalyticsRow);
   const offsets: number[] = [];
   for (let from = 1000; from < (first.count ?? 0); from += 1000) offsets.push(from);
   for (const result of await Promise.all(offsets.map((from) => page(from, false)))) {
-    rows.push(...(result.data ?? []));
+    rows.push(...(result.data ?? []).map(fromAnalyticsRow));
   }
   return rows;
 }
