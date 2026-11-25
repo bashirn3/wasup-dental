@@ -1,5 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { aiBookingsOf } from "@/lib/ai-bookings";
+import { aiBookingsOf, replyText } from "@/lib/ai-bookings";
 import { supabaseAdmin } from "@/lib/supabase";
 
 type SupabaseResult<T> = {
@@ -37,16 +37,26 @@ type DengroLeadRow = {
   } | null;
 };
 
+type ChatRow = {
+  id: number;
+  session_id: string;
+  message: { type?: unknown; content?: unknown } | null;
+  timestamp: string | null;
+};
+
 export type DengroMirrorResult = {
   practiceId: string;
   integrationId: string;
   displayName: string;
   table: string;
   leadsUpserted: number;
+  messagesInserted: number;
   sourceCount: number;
 };
 
 const SOURCE_SYSTEM = "dengro";
+// Small enough that a batch's messages stay under the 1,000-row response cap.
+const SESSION_BATCH = 50;
 
 const LEAD_COLUMNS =
   "id, created_at, first_name, last_name, number, email, treatment, deposit_status, deposit_paid_at, dentally_appointment_id, raw_data";
@@ -105,6 +115,9 @@ export async function mirrorDengroPractice(
       leadsUpserted += chunk.length;
     }
 
+    const prefix = typeof settings.chatHistorySessionPrefix === "string" ? settings.chatHistorySessionPrefix : "";
+    const messagesInserted = prefix ? await mirrorConversations(ours, source, practiceId, prefix, rows) : 0;
+
     await recordBookingActivity(ours, practiceId, rows);
     await finishSync(ours, practiceId, integration.id, "connected");
 
@@ -114,6 +127,7 @@ export async function mirrorDengroPractice(
       displayName: integration.display_name,
       table,
       leadsUpserted,
+      messagesInserted,
       sourceCount: rows.length,
     };
   } catch (syncError) {
@@ -135,7 +149,9 @@ function normalizeLead(row: DengroLeadRow, practiceId: string, now: string, book
     phone: row.number ? `+${row.number.replace(/\D/g, "")}` : null,
     email: row.email ?? null,
     treatment: treatmentFromDengro(row.treatment),
-    status: booked[String(row.id)] ? "booked" : messaged ? "engaged" : "new",
+    // The workflow saves the Dentally appointment only once Jo has booked it.
+    status:
+      booked[String(row.id)] || row.dentally_appointment_id != null ? "booked" : messaged ? "engaged" : "new",
     source: row.raw_data?.source ?? SOURCE_SYSTEM,
     source_system: SOURCE_SYSTEM,
     external_id: String(row.id),
@@ -158,6 +174,96 @@ function normalizeLead(row: DengroLeadRow, practiceId: string, now: string, book
     last_synced_at: now,
     updated_at: enquiredAt,
   };
+}
+
+/**
+ * Jo's conversations, which n8n keeps only in its chat memory, keyed by the
+ * patient's full number. Read by exact session id: the chat table is shared with
+ * other clients' live agents and cannot be searched by prefix without scanning
+ * all of it. Only patients Jo has messaged can have one.
+ */
+async function mirrorConversations(
+  ours: SupabaseClient,
+  source: SupabaseClient,
+  practiceId: string,
+  prefix: string,
+  rows: DengroLeadRow[],
+) {
+  const leadIdBySession = new Map<string, string>();
+  const externalBySession = new Map<string, string>();
+  for (const row of rows) {
+    const digits = (row.number ?? "").replace(/\D/g, "");
+    const contacted = row.raw_data?.outbound?.status === "sent" || row.dentally_appointment_id != null;
+    if (digits && contacted) externalBySession.set(prefix + digits, String(row.id));
+  }
+  const externalIds = [...new Set(externalBySession.values())];
+  const leadIdByExternal = new Map<string, string>();
+  for (let index = 0; index < externalIds.length; index += 200) {
+    const { data, error } = (await ours
+      .from("leads")
+      .select("id, external_id")
+      .eq("practice_id", practiceId)
+      .eq("source_system", SOURCE_SYSTEM)
+      .in("external_id", externalIds.slice(index, index + 200))) as SupabaseResult<
+      Array<{ id: string; external_id: string }>
+    >;
+    if (error) throw new Error(`lead_message_lookup_failed:${error.code ?? error.message}`);
+    for (const lead of data ?? []) leadIdByExternal.set(lead.external_id, lead.id);
+  }
+  for (const [session, externalId] of externalBySession) {
+    const leadId = leadIdByExternal.get(externalId);
+    if (leadId) leadIdBySession.set(session, leadId);
+  }
+
+  const sessions = [...leadIdBySession.keys()];
+  const messages = [];
+  for (let index = 0; index < sessions.length; index += SESSION_BATCH) {
+    const { data, error } = (await source
+      .from("chat_history")
+      .select("id, session_id, message, timestamp")
+      .in("session_id", sessions.slice(index, index + SESSION_BATCH))
+      .order("id")) as SupabaseResult<ChatRow[]>;
+    if (error) throw new Error(`chat_history_read_failed:${error.code ?? error.message}`);
+    for (const chat of data ?? []) {
+      const type = chat.message?.type;
+      if (type !== "ai" && type !== "human") continue;
+      const body = replyText(chat.message?.content).trim();
+      if (!body) continue;
+      messages.push({
+        practice_id: practiceId,
+        lead_id: leadIdBySession.get(chat.session_id)!,
+        direction: type === "human" ? "inbound" : "outbound",
+        body,
+        ai_generated: type === "ai",
+        source_system: SOURCE_SYSTEM,
+        external_id: `chat:${chat.id}`,
+        external_payload: { sender: type === "ai" ? "Jo" : "patient", type: "whatsapp" },
+        created_at: chat.timestamp ?? new Date().toISOString(),
+      });
+    }
+  }
+
+  const existing = new Set<string>();
+  for (let index = 0; index < messages.length; index += 100) {
+    const { data, error } = (await ours
+      .from("messages")
+      .select("external_id")
+      .eq("practice_id", practiceId)
+      .eq("source_system", SOURCE_SYSTEM)
+      .in(
+        "external_id",
+        messages.slice(index, index + 100).map((message) => message.external_id),
+      )) as SupabaseResult<Array<{ external_id: string }>>;
+    if (error) throw new Error(`message_lookup_failed:${error.code ?? error.message}`);
+    for (const row of data ?? []) existing.add(row.external_id);
+  }
+
+  const inserts = messages.filter((message) => !existing.has(message.external_id));
+  for (let index = 0; index < inserts.length; index += 500) {
+    const { error } = await ours.from("messages").insert(inserts.slice(index, index + 500));
+    if (error) throw new Error(`message_insert_failed:${error.code ?? error.message}`);
+  }
+  return inserts.length;
 }
 
 function treatmentFromDengro(treatment: string | null) {
