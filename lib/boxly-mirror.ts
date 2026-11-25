@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { aiBookingsOf } from "@/lib/ai-bookings";
 import { supabaseAdmin } from "@/lib/supabase";
 
 type SupabaseResult<T> = {
@@ -123,8 +124,9 @@ export async function mirrorBoxlyPractice(
     const { rows, count } = await loadLegacyLeads(legacy, settings.legacyLeadsTable, limit);
     sourceCount = count;
     const now = new Date().toISOString();
+    const booked = new Set(Object.keys(aiBookingsOf(integration.settings)));
     const leadRecords = rows
-      .map((row) => normalizeLead(row, practiceId, now))
+      .map((row) => normalizeLead(row, practiceId, now, booked))
       .filter((row): row is NonNullable<ReturnType<typeof normalizeLead>> => {
         if (row) return true;
         skipped += 1;
@@ -140,6 +142,8 @@ export async function mirrorBoxlyPractice(
       leadsUpserted += chunk.length;
     }
 
+    await applyBookedStatus(ours, practiceId, booked);
+
     if (options.includeConversations) {
       messagesUpserted = await upsertConversations(ours, practiceId, rows);
     }
@@ -154,10 +158,7 @@ export async function mirrorBoxlyPractice(
       updated: messagesUpserted,
       skipped,
       errorMessage: null,
-      settingsPatch: {
-        ...(integration.settings ?? {}),
-        lastConfigSnapshot: configSnapshot,
-      },
+      settingsPatch: { lastConfigSnapshot: configSnapshot },
     });
 
     return {
@@ -260,7 +261,40 @@ async function loadLegacyLeads(client: SupabaseClient, table: string, limit: num
   return { rows: data ?? [], count: count ?? null };
 }
 
-function normalizeLead(row: BoxlyLeadRow, practiceId: string, now: string) {
+/**
+ * Bring every lead's booked status in line with the agent's confirmations, not
+ * only the leads in this run's window: the scheduled run re-reads just the newest
+ * enquiries, and many bookings were made with patients who enquired long before.
+ */
+async function applyBookedStatus(ours: SupabaseClient, practiceId: string, booked: Set<string>) {
+  const { data: stored, error } = (await ours
+    .from("leads")
+    .select("external_id")
+    .eq("practice_id", practiceId)
+    .eq("source_system", "boxly")
+    .eq("status", "booked")) as SupabaseResult<Array<{ external_id: string }>>;
+  if (error) throw new Error(`booked_lookup_failed:${error.code ?? error.message}`);
+
+  const storedIds = new Set((stored ?? []).map((lead) => lead.external_id));
+  const toBook = [...booked].filter((externalId) => !storedIds.has(externalId));
+  const toUnbook = [...storedIds].filter((externalId) => !booked.has(externalId));
+  for (const [ids, status] of [
+    [toBook, "booked"],
+    [toUnbook, "engaged"],
+  ] as const) {
+    for (let index = 0; index < ids.length; index += 200) {
+      const { error: updateError } = await ours
+        .from("leads")
+        .update({ status })
+        .eq("practice_id", practiceId)
+        .eq("source_system", "boxly")
+        .in("external_id", ids.slice(index, index + 200));
+      if (updateError) throw new Error(`booked_update_failed:${updateError.code ?? updateError.message}`);
+    }
+  }
+}
+
+function normalizeLead(row: BoxlyLeadRow, practiceId: string, now: string, booked: Set<string>) {
   const externalId = row.boxly_lead_id ?? null;
   if (!externalId) return null;
   const fullName =
@@ -273,7 +307,7 @@ function normalizeLead(row: BoxlyLeadRow, practiceId: string, now: string) {
     phone: row.phone_e164 ?? row.phone_number ?? null,
     email: row.email ?? null,
     treatment: treatmentFromBox(row.box_name),
-    status: aiActioned ? "engaged" : "new",
+    status: booked.has(externalId) ? "booked" : aiActioned ? "engaged" : "new",
     source: row.lead_source ?? "boxly",
     source_system: "boxly",
     external_id: externalId,
@@ -399,6 +433,17 @@ async function finishSync(
   },
 ) {
   const finishedAt = new Date().toISOString();
+  // Read now rather than at the start of the run: the booking sync writes to the
+  // same settings, and a stale copy would drop what it found meanwhile.
+  let settings: Record<string, unknown> | null = null;
+  if (args.settingsPatch) {
+    const { data } = (await supabase
+      .from("integrations")
+      .select("settings")
+      .eq("id", args.integrationId)
+      .maybeSingle()) as SupabaseResult<{ settings: Record<string, unknown> | null }>;
+    settings = { ...(data?.settings ?? {}), ...args.settingsPatch };
+  }
   await Promise.all([
     supabase
       .from("integrations")
@@ -406,7 +451,7 @@ async function finishSync(
         last_synced_at: finishedAt,
         updated_at: finishedAt,
         status: args.status === "completed" ? "connected" : "error",
-        ...(args.settingsPatch ? { settings: args.settingsPatch } : {}),
+        ...(settings ? { settings } : {}),
       })
       .eq("id", args.integrationId),
     supabase.from("practices").update({ last_synced_at: finishedAt }).eq("id", args.practiceId),

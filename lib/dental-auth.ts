@@ -203,6 +203,12 @@ export async function resolvePracticeMembership(
   return null;
 }
 
+// Practices that exist for another product (the review system's test and
+// review-only rows) are flagged in external_payload rather than deleted, since
+// that product still reads them. A missing flag means shown.
+const SHOWN_IN_SWITCHER =
+  "external_payload->>dashboardHidden.is.null,external_payload->>dashboardHidden.neq.true";
+
 export async function listAccessibleWorkspaces(): Promise<DentalWorkspace[]> {
   const supabase = supabaseAdmin();
   if (!supabase) {
@@ -221,6 +227,7 @@ export async function listAccessibleWorkspaces(): Promise<DentalWorkspace[]> {
     const { data } = (await supabase
       .from("practices")
       .select("id, name, source_system, integration_mode")
+      .or(SHOWN_IN_SWITCHER)
       .order("name", { ascending: true })) as SupabaseResult<PracticeRow[]>;
     return (data ?? []).map((practice) => mapWorkspace(practice, "admin"));
   }
@@ -233,6 +240,7 @@ export async function listAccessibleWorkspaces(): Promise<DentalWorkspace[]> {
     const { data } = (await supabase
       .from("practices")
       .select("id, name, source_system, integration_mode")
+      .or(SHOWN_IN_SWITCHER)
       .order("name", { ascending: true })) as SupabaseResult<PracticeRow[]>;
     return (data ?? []).map((practice) => mapWorkspace(practice, "admin"));
   }

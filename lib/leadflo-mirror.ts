@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { aiBookingsOf } from "@/lib/ai-bookings";
 import { supabaseAdmin } from "@/lib/supabase";
 import {
   syncLeadfloConversations,
@@ -257,23 +258,21 @@ export async function mirrorLeadfloPractice(
       records.map((record) => record.external_id),
     );
 
-    // Knowing who is booked is an enrichment, not the job. If the booking table
-    // cannot be read the leads still mirror; they just stay at "engaged", and
-    // the reason is recorded on the run rather than thrown away.
-    let booked = new Set<string>();
+    // The booking table only stamps when Dentally and Stripe last did their job.
+    // Who is booked comes from the agent's own confirmations.
     try {
-      const evidence = await loadBookingEvidence(settings);
-      booked = evidence.numbers;
-      await recordBookingEvidence(ours, practiceId, evidence);
+      await recordBookingEvidence(ours, practiceId, await loadBookingEvidence(settings));
     } catch (bookingError) {
       bookingSkipped =
         bookingError instanceof Error ? bookingError.message : String(bookingError);
     }
 
+    const booked = aiBookingsOf(integration.settings);
     for (const record of records) {
-      const digits = digitsOf(record.phone);
-      const derived = digits && booked.has(digits) ? "booked" : record.status;
-      record.status = resolveStatus(derived, existing.get(record.external_id)?.status);
+      const stored = existing.get(record.external_id)?.status;
+      record.status = booked[record.external_id]
+        ? "booked"
+        : resolveStatus(record.status, stored === "booked" ? "engaged" : stored);
     }
 
     const leadIds = new Map(
@@ -686,6 +685,8 @@ const STATUS_RANK: Record<string, number> = { new: 0, engaged: 1, booked: 2 };
  * backwards. Clearing a lead's outbound flag to re-run a demo does not unmake
  * the conversation, and demoting them to "new" is what dropped them out of the
  * Activity tab. A status we do not recognise was set by hand, so it is left be.
+ *
+ * Booked is the exception: the caller sets it from the agent's confirmations.
  */
 function resolveStatus(derived: string, stored: string | null | undefined) {
   if (!stored) return derived;
@@ -695,13 +696,6 @@ function resolveStatus(derived: string, stored: string | null | undefined) {
 }
 
 type BookingEvidence = {
-  /**
-   * Phone numbers with a Dentally appointment against them, as digits.
-   *
-   * A deposit that was paid but failed to book is deliberately not counted: the
-   * appointment id is the only evidence the patient actually has a slot.
-   */
-  numbers: Set<string>;
   /** When Stripe last took a deposit. */
   lastDepositAt: string | null;
   /** When a deposit last became an appointment. */
@@ -717,7 +711,7 @@ type BookingEvidence = {
  * appointment id the paid time is also when the booking succeeded.
  */
 async function loadBookingEvidence(settings: LeadfloSettings): Promise<BookingEvidence> {
-  if (!settings.bookingTable) return { numbers: new Set(), lastDepositAt: null, lastBookingAt: null };
+  if (!settings.bookingTable) return { lastDepositAt: null, lastBookingAt: null };
 
   const url = process.env[settings.bookingSupabaseUrlEnv];
   const key = process.env[settings.bookingSupabaseServiceRoleKeyEnv];
@@ -726,9 +720,8 @@ async function loadBookingEvidence(settings: LeadfloSettings): Promise<BookingEv
   const bookings = createClient(url, key, { auth: { persistSession: false } });
   const { data, error } = (await bookings
     .from(settings.bookingTable)
-    .select("number, dentally_appointment_id, deposit_paid_at")) as SupabaseResult<
+    .select("dentally_appointment_id, deposit_paid_at")) as SupabaseResult<
     Array<{
-      number: string | null;
       dentally_appointment_id: string | number | null;
       deposit_paid_at: string | null;
     }>
@@ -736,17 +729,12 @@ async function loadBookingEvidence(settings: LeadfloSettings): Promise<BookingEv
   if (error) throw new Error(`booking_lookup_failed:${error.code ?? error.message}`);
 
   const evidence: BookingEvidence = {
-    numbers: new Set<string>(),
     lastDepositAt: null,
     lastBookingAt: null,
   };
 
   for (const row of data ?? []) {
     const booked = row.dentally_appointment_id !== null && row.dentally_appointment_id !== undefined;
-    if (booked) {
-      const digits = digitsOf(row.number);
-      if (digits) evidence.numbers.add(digits);
-    }
 
     const paidAt = row.deposit_paid_at;
     if (!paidAt) continue;
@@ -789,11 +777,6 @@ async function recordBookingEvidence(
         .eq("source_system", sourceSystem),
     ),
   );
-}
-
-/** Numbers are stored E.164 here and bare in the booking table, so compare digits. */
-function digitsOf(value: string | null | undefined) {
-  return (value ?? "").replace(/\D/g, "");
 }
 
 async function finishSync(
