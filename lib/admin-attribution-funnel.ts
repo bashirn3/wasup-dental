@@ -6,9 +6,10 @@ import {
   buildDentalAestheticaRows,
   getDentalAestheticaNotes,
 } from "./funnel-dental-aesthetica";
+import { LEIGH_CONSULT_VALUE, LEIGH_PRACTICE_NAME, buildLeighRows, getLeighNotes } from "./funnel-leigh";
 import { supabaseAdmin } from "./supabase";
 
-export type PracticeKey = "regent" | "nuyu" | "dental_aesthetica";
+export type PracticeKey = "regent" | "nuyu" | "dental_aesthetica" | "leigh";
 
 export type FunnelStatus =
   | "all"
@@ -196,7 +197,12 @@ type DentallyEvidence = {
  */
 type PracticeSource =
   | { kind: "boxly_v1"; v1BaseUrl: string }
-  | { kind: "wasup"; activityUrl: string };
+  | {
+      kind: "wasup";
+      activityUrl: string;
+      buildRows: () => Promise<{ rows: FunnelLeadRow[]; testRowsExcluded: number }>;
+      notes: (leadId: string) => Promise<FunnelNote[]>;
+    };
 
 type PracticeConfig = {
   label: string;
@@ -234,13 +240,25 @@ const PRACTICES: Record<PracticeKey, PracticeConfig> = {
   dental_aesthetica: {
     label: "Dental Aesthetica",
     practiceName: DENTAL_AESTHETICA_PRACTICE_NAME,
-    source: { kind: "wasup", activityUrl: "/dashboard" },
+    source: {
+      kind: "wasup",
+      activityUrl: "/dashboard",
+      buildRows: buildDentalAestheticaRows,
+      notes: getDentalAestheticaNotes,
+    },
     consultValue: DENTAL_AESTHETICA_CONSULT_VALUE,
     dentallyTokenEnvs: [
       "DENTAL_AESTHETICA_DENTALLY_API_TOKEN",
       "DA_DENTALLY_API_TOKEN",
       "DENTALLY_API_TOKEN_DENTAL_AESTHETICA",
     ],
+  },
+  leigh: {
+    label: LEIGH_PRACTICE_NAME,
+    practiceName: LEIGH_PRACTICE_NAME,
+    source: { kind: "wasup", activityUrl: "/dashboard", buildRows: buildLeighRows, notes: getLeighNotes },
+    consultValue: LEIGH_CONSULT_VALUE,
+    dentallyTokenEnvs: ["LEIGH_DENTALLY_API_TOKEN", "DENTALLY_LEIGH_API_TOKEN", "DENTALLY_API_TOKEN_LEIGH"],
   },
 };
 
@@ -325,8 +343,8 @@ export async function getAdminAttributionFunnel(
 
 export async function getFunnelLeadNotes(practice: PracticeKey, leadId: string): Promise<FunnelNote[]> {
   const cfg = PRACTICES[practice];
-  // Dental Aesthetica's AI writes no Boxly note; the conversation is the record.
-  if (cfg.source.kind === "wasup") return getDentalAestheticaNotes(leadId);
+  // These practices' AI writes no Boxly note; the conversation is the record.
+  if (cfg.source.kind === "wasup") return cfg.source.notes(leadId);
 
   const safeLeadId = encodeURIComponent(leadId);
   const url = `${cfg.source.v1BaseUrl}/api/v1/agent/activity/${safeLeadId}/notes`;
@@ -554,7 +572,7 @@ async function carriedRowsFromSnapshot(): Promise<Map<string, FunnelLeadRow>> {
 async function loadPractice(key: PracticeKey): Promise<FunnelPracticeSummary> {
   const cfg = PRACTICES[key];
   if (cfg.source.kind === "wasup") {
-    const built = await buildDentalAestheticaRows();
+    const built = await cfg.source.buildRows();
     return summarizeRows(key, built.rows, built.testRowsExcluded);
   }
   const leads = await fetchAllV1Leads(key);
