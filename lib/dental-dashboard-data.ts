@@ -191,20 +191,13 @@ export async function getDentalDashboardData(
       )
       .eq("practice_id", practiceId)
       .limit(10000),
-    supabase
-      .from("leads")
-      .select(
-        "id, practice_id, name, phone, email, treatment, status, source, source_system, box_name, box_stage, needs_human, ai_confidence, last_synced_at, updated_at, external_payload",
-      )
-      .eq("practice_id", practiceId)
-      .in("status", ["engaged", "booked"])
-      .limit(1000),
+    loadActivityRows(supabase, practiceId),
   ]);
 
   const messageRows = messages ?? [];
   const mappedIntegrations = (integrations ?? []).map(mapIntegration);
   const allLeadRows = (facets.data ?? []) as LeadRow[];
-  const activityRowsRaw = (activityRowsResult.data ?? []) as LeadRow[];
+  const activityRowsRaw = activityRowsResult;
   // "When our agent last messaged them" is the source of truth for Activity order.
   const lastOutboundByLead = await fetchLastOutboundByLead(
     supabase,
@@ -782,6 +775,32 @@ function compareActivityDesc(a: string | null, b: string | null): number {
  * Degrades gracefully to an empty map if the view is not yet migrated, in which
  * case ordering falls back to actioned_at (still correct, just Boxly-equivalent).
  */
+/**
+ * Every lead the agent has spoken to, in pages. One request is capped at 1,000
+ * rows, and Nuyu alone has more engaged leads than that, so a single read
+ * showed an arbitrary slice and left most of its booked patients out.
+ */
+async function loadActivityRows(
+  supabase: NonNullable<ReturnType<typeof supabaseAdmin>>,
+  practiceId: string,
+): Promise<LeadRow[]> {
+  const rows: LeadRow[] = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = (await supabase
+      .from("leads")
+      .select(
+        "id, practice_id, name, phone, email, treatment, status, source, source_system, box_name, box_stage, needs_human, ai_confidence, last_synced_at, updated_at, external_payload",
+      )
+      .eq("practice_id", practiceId)
+      .in("status", ["engaged", "booked"])
+      .order("id")
+      .range(from, from + 999)) as SupabaseResult<LeadRow[]>;
+    if (error) return rows;
+    rows.push(...(data ?? []));
+    if ((data ?? []).length < 1000) return rows;
+  }
+}
+
 async function fetchLastOutboundByLead(
   supabase: NonNullable<ReturnType<typeof supabaseAdmin>>,
   practiceId: string,

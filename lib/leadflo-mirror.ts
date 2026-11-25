@@ -292,6 +292,26 @@ export async function mirrorLeadfloPractice(
       leadsUpserted += chunk.length;
     }
 
+    // Leads that have left the feeder are never re-read above, so one marked
+    // booked before booked meant a confirmation would stay booked for good.
+    const { data: storedBooked, error: storedBookedError } = (await ours
+      .from("leads")
+      .select("external_id")
+      .eq("practice_id", practiceId)
+      .eq("source_system", SOURCE_SYSTEM)
+      .eq("status", "booked")) as SupabaseResult<Array<{ external_id: string }>>;
+    if (storedBookedError) throw new Error(`booked_lookup_failed:${storedBookedError.code ?? storedBookedError.message}`);
+    const unconfirmed = (storedBooked ?? []).map((lead) => lead.external_id).filter((id) => !booked[id]);
+    if (unconfirmed.length) {
+      const { error: unbookError } = await ours
+        .from("leads")
+        .update({ status: "engaged" })
+        .eq("practice_id", practiceId)
+        .eq("source_system", SOURCE_SYSTEM)
+        .in("external_id", unconfirmed);
+      if (unbookError) throw new Error(`booked_update_failed:${unbookError.code ?? unbookError.message}`);
+    }
+
     // Conversations are a separate, chattier job than the lead rows, and one
     // unreadable timeline must not cost us the mirror. The enquiry-date backfill
     // taught us that the hard way: an optional enrichment step took the whole
