@@ -44,6 +44,8 @@ type ActivityFilters = {
   q: string;
   status: string;
   box: string;
+  from: string;
+  to: string;
 };
 
 const tabs: [TabKey, string, typeof MIcon.users][] = [
@@ -60,7 +62,7 @@ const ACTIVE_WORKSPACE_KEY = "wasup-dental-active-workspace";
 const PAGE_SIZE = 50;
 const SEARCH_DEBOUNCE_MS = 300;
 const emptyFilters: LeadFilters = { q: "", status: "", box: "", stage: "" };
-const emptyActivityFilters: ActivityFilters = { q: "", status: "", box: "" };
+const emptyActivityFilters: ActivityFilters = { q: "", status: "", box: "", from: "", to: "" };
 
 function hasTreatmentControls(practice: DentalDashboardData["practice"]) {
   const externalId = practice?.externalId?.toLowerCase() ?? "";
@@ -1174,6 +1176,8 @@ function ActivityPanel({
   const metrics = data.metrics;
   const total = Math.max(metrics?.leadTotal ?? data.leads.length, 1);
   const sourceLeads = data.activityLeads?.length ? data.activityLeads : data.leads;
+  const listDate = (lead: DentalLead) =>
+    filters.status === "Booked" ? (lead.bookedAt ?? activityTimestamp(lead)) : activityTimestamp(lead);
   const activityLeads = sourceLeads
     .filter((lead) => lead.aiActioned || lead.actioned || lead.clientReplied || lead.needsHuman || lead.status === "booked")
     .filter((lead) => {
@@ -1189,8 +1193,13 @@ function ActivityPanel({
         [lead.name, lead.phone, lead.email, lead.boxName, lead.boxStage, lead.leadSummary, lead.lastMessage]
           .filter(Boolean)
           .some((value) => String(value).toLowerCase().includes(search));
+      const at = listDate(lead);
+      const day = at ? new Date(at).toLocaleDateString("en-CA") : null;
+      const dateMatches =
+        (!filters.from && !filters.to) ||
+        (day !== null && (!filters.from || day >= filters.from) && (!filters.to || day <= filters.to));
 
-      return statusMatches && laneMatches && searchMatches;
+      return statusMatches && laneMatches && searchMatches && dateMatches;
     })
     .sort((a, b) =>
       filters.status === "Booked"
@@ -1204,7 +1213,7 @@ function ActivityPanel({
     page * ACTIVITY_PAGE_SIZE,
   );
   const statusOptions = ["AI responded", "Client responded", "Booked"];
-  const hasFilters = filters.q || filters.status || filters.box;
+  const hasFilters = filters.q || filters.status || filters.box || filters.from || filters.to;
   const totalActioned =
     metrics?.aiActionedTotal ?? sourceLeads.filter((lead) => lead.aiActioned || lead.actioned).length;
   const clientResponded =
@@ -1293,6 +1302,26 @@ function ActivityPanel({
                 value={filters.box}
                 options={data.facets?.boxes ?? []}
                 onChange={(value) => setFilters((current) => ({ ...current, box: value }))}
+              />
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-ink/50">
+              <span>{filters.status === "Booked" ? "Booked between" : "Last messaged between"}</span>
+              <input
+                type="date"
+                aria-label="From date"
+                value={filters.from}
+                max={filters.to || undefined}
+                onChange={(event) => setFilters((current) => ({ ...current, from: event.target.value }))}
+                className="rounded-2xl border border-line bg-mist/50 px-3 py-2 text-sm text-ink outline-none transition focus:border-pine/30 focus:bg-white"
+              />
+              <span>and</span>
+              <input
+                type="date"
+                aria-label="To date"
+                value={filters.to}
+                min={filters.from || undefined}
+                onChange={(event) => setFilters((current) => ({ ...current, to: event.target.value }))}
+                className="rounded-2xl border border-line bg-mist/50 px-3 py-2 text-sm text-ink outline-none transition focus:border-pine/30 focus:bg-white"
               />
             </div>
           </div>
