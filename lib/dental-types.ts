@@ -83,6 +83,7 @@ export type DentalLead = {
   lastSyncedAt: string | null;
   updatedAt: string;
   lastOutboundAt: string | null;
+  bookedAt?: string | null;
   lastMessage: string;
   messages: DentalMessage[];
 };

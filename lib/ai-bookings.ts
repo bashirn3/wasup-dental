@@ -34,10 +34,10 @@ export type AiBookingsResult = {
  * The agent telling a patient their slot is booked. Written for the replies the
  * agents actually send: "You're booked for your Invisalign consultation on…",
  * "Your consultation is now booked for…", "Payment received! Your appointment is
- * booked for…".
+ * booked for…", "Your appointment was recorded for…".
  */
 const CONFIRMED =
-  /(\b(you'?re|you’re|you are|is|are|has been|have been|been) (now |all |successfully )?(booked|confirmed) (in|for|on|with)\b|\bbooked you (in|for)\b|\bthis is (now )?booked\b|appointment for .{3,80} is confirmed on|\byour (appointment|consultation|booking) (is|has been) (now )?(booked|confirmed)\b)/i;
+  /(\b(you'?re|you’re|you are|is|are|has been|have been|been) (now |all |successfully )?(booked|confirmed) (in|for|on|with)\b|\bbooked you (in|for)\b|\bthis is (now )?booked\b|appointment for .{3,80} is confirmed on|\byour (appointment|consultation|booking) (is|has been) (now )?(booked|confirmed)\b|\byour (appointment|consultation|booking) (was|is|has been) (now )?recorded for\b)/i;
 
 /**
  * Offers and holds that use the same words. A slot held until a deposit is paid

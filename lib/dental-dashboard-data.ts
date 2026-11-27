@@ -8,6 +8,7 @@ import type {
   SourceSystem,
   TreatmentKey,
 } from "@/lib/dental-types";
+import { aiBookingsOf } from "@/lib/ai-bookings";
 import { supabaseAdmin } from "@/lib/supabase";
 
 type SupabaseResult<T> = {
@@ -46,6 +47,7 @@ type LeadRow = {
   last_synced_at: string | null;
   updated_at: string;
   external_payload: JsonRecord | null;
+  external_id?: string | null;
   client_replied?: boolean;
 };
 
@@ -68,6 +70,7 @@ type IntegrationRow = {
   status: string;
   mode: string;
   last_synced_at: string | null;
+  settings: JsonRecord | null;
 };
 
 type WorkflowRow = {
@@ -152,7 +155,7 @@ export async function getDentalDashboardData(
 
   const { data: integrations } = (await supabase
     .from("integrations")
-    .select("id, source_system, display_name, status, mode, last_synced_at")
+    .select("id, source_system, display_name, status, mode, last_synced_at, settings")
     .eq("practice_id", practiceId)
     .order("created_at", { ascending: true })) as SupabaseResult<IntegrationRow[]>;
 
@@ -254,7 +257,7 @@ export async function getDentalDashboardData(
     laneSummary: buildLaneSummary(allLeadRows),
     analytics: buildAnalytics(allLeadRows),
     leads: leadRows.map((lead) => mapLead(lead, messageRows)),
-    activityLeads: buildActivityLeads(activityRows, lastOutboundByLead),
+    activityLeads: buildActivityLeads(activityRows, lastOutboundByLead, bookedAtByLead(integrations ?? [])),
     integrations: withExpectedIntegrations(mappedIntegrations, practice.source_system ?? "native"),
     workflows: (workflows ?? []).map(mapWorkflow),
     activity: buildActivity(activityRows, messageRows, lastOutboundByLead),
@@ -423,7 +426,7 @@ const RAW_META_KEYS = [
 // The raw Boxly record is most of each lead's payload; read only the keys
 // extractLeadMeta uses from it.
 const ANALYTICS_LEAD_SELECT = [
-  "id, practice_id, name, phone, email, treatment, status, source, source_system, box_name, box_stage, needs_human, ai_confidence, last_synced_at, updated_at",
+  "id, practice_id, external_id, name, phone, email, treatment, status, source, source_system, box_name, box_stage, needs_human, ai_confidence, last_synced_at, updated_at",
   "legacy:external_payload->legacy",
   "summary:external_payload->summary",
   "raw_linked_summary:external_payload->raw->linked_leads->0->lead_summary",
@@ -438,6 +441,7 @@ function fromAnalyticsRow(row: AnalyticsLeadRow): LeadRow {
   return {
     id: row.id,
     practice_id: row.practice_id,
+    external_id: row.external_id,
     name: row.name,
     phone: row.phone,
     email: row.email,
@@ -725,14 +729,32 @@ function withExpectedIntegrations(
 
 // All of them, not the most recent few: the Activity filters run in the browser
 // over this list, so a capped list hid most booked and replied leads.
-function buildActivityLeads(leads: LeadRow[], lastOutboundByLead: Map<string, string>): DentalLead[] {
+function buildActivityLeads(
+  leads: LeadRow[],
+  lastOutboundByLead: Map<string, string>,
+  bookedAt: Map<string, string>,
+): DentalLead[] {
   return leads
     .filter((lead) => {
       const meta = extractLeadMeta(lead);
       return meta.actioned || meta.aiActioned || lead.status === "engaged" || lead.status === "booked";
     })
     .sort((a, b) => compareActivityDesc(activityOrderKey(a, lastOutboundByLead), activityOrderKey(b, lastOutboundByLead)))
-    .map((lead) => mapLead(lead, [], lastOutboundByLead.get(lead.id) ?? null));
+    .map((lead) => ({
+      ...mapLead(lead, [], lastOutboundByLead.get(lead.id) ?? null),
+      bookedAt: bookedAt.get(`${lead.source_system}:${lead.external_id}`) ?? null,
+    }));
+}
+
+/** "source_system:external_id" -> when the agent confirmed the booking. */
+function bookedAtByLead(integrations: IntegrationRow[]): Map<string, string> {
+  const bookedAt = new Map<string, string>();
+  for (const integration of integrations) {
+    for (const [externalId, at] of Object.entries(aiBookingsOf(integration.settings))) {
+      bookedAt.set(`${integration.source_system}:${externalId}`, at);
+    }
+  }
+  return bookedAt;
 }
 
 function buildActivity(

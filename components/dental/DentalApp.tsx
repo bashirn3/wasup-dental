@@ -1192,7 +1192,12 @@ function ActivityPanel({
 
       return statusMatches && laneMatches && searchMatches;
     })
-    .sort((a, b) => compareActivityDesc(activityTimestamp(a), activityTimestamp(b)));
+    .sort((a, b) =>
+      filters.status === "Booked"
+        ? compareActivityDesc(a.bookedAt ?? null, b.bookedAt ?? null) ||
+          compareActivityDesc(activityTimestamp(a), activityTimestamp(b))
+        : compareActivityDesc(activityTimestamp(a), activityTimestamp(b)),
+    );
   const ACTIVITY_PAGE_SIZE = 20;
   const pagedActivityLeads = activityLeads.slice(
     (page - 1) * ACTIVITY_PAGE_SIZE,
